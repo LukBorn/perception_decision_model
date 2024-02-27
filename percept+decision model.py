@@ -1,3 +1,4 @@
+import matplotlib.colors
 import numpy as np
 import pandas as pd
 import scipy
@@ -12,9 +13,7 @@ class Params():
                  init_values = 1,
                  alpha = 0.5,
                  sigma = np.sqrt(0.2),
-                 reward_magnitude=(1,1),
                  time_steps = 100000,
-                 blocks = None,
                  stimulus_type = "linspace",
                  choice_type = "greedy",
                  beta = 9.097,
@@ -23,6 +22,7 @@ class Params():
 
         np.random.seed = seed
         self.verbose = verbose
+
     # inital values for value function
         self.init_values = init_values
 
@@ -42,7 +42,7 @@ class Params():
     #        -> int like 500 -> blocks of 500 trials where the reward biases are switched
     #     if type(blocks) is not int or type(blocks) is not None :
     #         raise ValueError("blocks must be either None or dtype int")
-        self.blocks = self.get_blocks()
+    #     self.blocks = self.get_blocks()
 
 
     # type of stimulus: has to be between -1 and 1
@@ -61,8 +61,8 @@ class Params():
     # the cut for psychometric evaluation between an easy and a hard difficulty stimulus
         self.difficulty_cut = difficulty_cut
 
-    def get_blocks(self):
-        blocks = np.empty(self.time_steps)
+    # def get_blocks(self):
+    #     blocks = np.empty(self.time_steps)
 
 
 
@@ -104,7 +104,7 @@ def decision_model(params = Params(),
     results = Results(params)
 
     if reward_blocks is None:
-        reward_blocks = np.empty((params.time_steps,2),np.float16)
+        reward_blocks = np.ones((params.time_steps,2))
     elif reward_blocks.shape != (params.time_steps,2):
         raise AttributeError("reward_blocks must be in shape (params.time_steps,2), \n "
                              "with reward_blocks[0] being left reward_magnitudes, and reward_blocks[0] ")
@@ -145,8 +145,6 @@ def decision_model(params = Params(),
 
     results.bin_stimuli()
     return results
-
-
 
 
 
@@ -238,18 +236,32 @@ class Results():
         """
         plots the stimulus vs choice average, seperately for each previous choice
         """
-        psychometric = pd.DataFrame(index=["previous_left", "previous_right"],
-                                    columns=[i for i in np.unique(self.stimuli)])
+        data = pd.DataFrame(columns=["previous_left", "previous_right"],
+                            index=[i for i in np.unique(self.stimuli)])
         previous_choices = np.concatenate(([0],self.choices[:-1]))
         for stimulus in np.unique(self.stimuli):
             previous_left_idx = np.logical_and(previous_choices == 0, self.stimuli == stimulus).nonzero()[0]
-            psychometric.loc["previous_left", stimulus] = np.mean(self.choices[previous_left_idx])
+            data.loc[stimulus, "previous_left"] = np.mean(self.choices[previous_left_idx])
             previous_right_idx = np.logical_and(previous_choices == 1, self.stimuli == stimulus).nonzero()[0]
-            psychometric.loc["previous_right", stimulus] = np.mean(self.choices[previous_right_idx])
+            data.loc[stimulus, "previous_right"] = np.mean(self.choices[previous_right_idx])
 
-        g = sns.lineplot(data=psychometric.T, dashes=False, markers=True, palette="Set1")
+        g = sns.lineplot(data=data, dashes=False, markers=True, palette="Set1")
         g.set_xlabel("Current Stimulus")
         g.set_ylabel("Average Choice")
+
+    def plot_prediction_error(self):
+        # plot reward prediction error dependent on stimulus
+        data = pd.DataFrame(columns = ["mean", "sd"],index = [i for i in np.unique(self.stimuli)])
+        for stimulus in np.unique(self.stimuli):
+            data.loc[stimulus, "mean"] = np.mean(self.prediction_error[self.stimuli == stimulus])
+            data.loc[stimulus, "sd"] = np.std(self.prediction_error[self.stimuli == stimulus])
+
+        sns.lineplot(data=data["mean"], marker='o')
+        # Add error bars
+        plt.errorbar(data.index, data['mean'], yerr=data['sd'], fmt='none', capsize=5)
+        plt.xlabel('Stimulus')
+        plt.ylabel('Reward Prediction Error')
+
 
 
     # def plot_previous_rewarded(self):
@@ -362,24 +374,29 @@ class Results():
 
 def plot_params(alphas = [0.2,0.5,0.7],
                 sigmas = [0.2,0.5,0.7],
-                n = 10000
+                n = 10000,
+                alpha_sigma = None
 ):
-    alpha_sigma = pd.DataFrame(index = alphas,columns=sigmas)
+    if alpha_sigma is None:
+        alpha_sigma = pd.DataFrame(index = alphas,columns=sigmas)
 
-    for alpha in alphas:
-        for sigma in sigmas:
-            results = decision_model(Params(alpha=alpha, sigma=sigma,time_steps=n,verbose=True))
-            _,matrix,_ = results.get_psychometric()
-            alpha_sigma.loc[alpha,sigma] = matrix.values
-            ticks = matrix.index
+        for alpha in alphas:
+            for sigma in sigmas:
+                results = decision_model(Params(alpha=alpha, sigma=sigma,time_steps=n,verbose=True))
+                _,matrix,_ = results.get_psychometric()
+                alpha_sigma.loc[alpha,sigma] = matrix.values
+                ticks = matrix.index
 
     fig, axes = plt.subplots(nrows=len(alphas),
                              ncols=len(sigmas),
                              figsize=(10, 10))
 
+    max_abs = np.max(np.abs(np.concatenate(alpha_sigma.values.flatten())))
+
     for (i, j), ax in np.ndenumerate(axes):
-        ax.imshow(alpha_sigma.iloc[i,j].astype(np.float64).T,
-                             cmap='RdBu', interpolation='nearest', aspect='auto')
+        im = ax.imshow(alpha_sigma.iloc[i,j].astype(np.float64).T,
+                       cmap='RdBu', norm = matplotlib.colors.Normalize(vmin=-max_abs, vmax=max_abs),
+                       interpolation='nearest', aspect='auto')
 
         ax.set_title(f'(alpha = {alpha_sigma.index[i]}, sigma = {alpha_sigma.columns[j]})')
         ax.set_xlabel("Current Stimulus")
@@ -395,13 +412,13 @@ def plot_params(alphas = [0.2,0.5,0.7],
         if i < 2:
             ax.xaxis.set_visible(False)
 
-    # from mpl_toolkits.axes_grid1 import make_axes_locatable
-    # # Create a single colorbar
-    # divider = make_axes_locatable(axes[-1, -1])
-    # cax = divider.append_axes("right", size="5%", pad=0.1)
-    # cbar = plt.colorbar(im, cax=cax)
-    # cbar.set_label('Colorbar Label')
-    # plt.show()
+    from mpl_toolkits.axes_grid1 import make_axes_locatable
+    # Create a single colorbar
+    divider = make_axes_locatable(fig.gca())
+    cax = divider.append_axes("right", size="5%", pad=0.1)
+    cbar = plt.colorbar(im, cax=cax)
+    cbar.set_label('Colorbar Label')
+    plt.show()
 
     return alpha_sigma
 
