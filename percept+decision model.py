@@ -7,6 +7,9 @@ import seaborn as sns
 import scripts as sc
 
 class Params():
+    """
+    parameter class holding all model parameters
+    """
     def __init__(self,
                  seed = 42,
                  verbose = False,
@@ -32,18 +35,8 @@ class Params():
     # the standard deviation of the percept gaussian
         self.sigma = sigma
 
-    # # magnitude of reward -> should be in shape [reward_magnitude_left, reward_magnitude_right]
-    #     self.reward_magnitude = reward_magnitude
-
     # time steps -> how many trials a model does
         self.time_steps = time_steps
-
-    # blocks -> None: no blocks with differing reward probabilities (reward bias)
-    #        -> int like 500 -> blocks of 500 trials where the reward biases are switched
-    #     if type(blocks) is not int or type(blocks) is not None :
-    #         raise ValueError("blocks must be either None or dtype int")
-    #     self.blocks = self.get_blocks()
-
 
     # type of stimulus: has to be between -1 and 1
     # 'linspace': 10 equally spaced values
@@ -61,14 +54,75 @@ class Params():
     # the cut for psychometric evaluation between an easy and a hard difficulty stimulus
         self.difficulty_cut = difficulty_cut
 
-    # def get_blocks(self):
-    #     blocks = np.empty(self.time_steps)
+    # reward magnitude: array with [reward_magnitude_left, reward_magnitude_right] at each time step i
+        self.reward_magnitude = np.ones((time_steps, 2))
+
+    # reward probability: array with [reward_magnitude_left, reward_magnitude_right] at each time step i
+        self.reward_probability = np.ones((time_steps, 2))
+
+    def get_blocks(self,
+                   magnitude_structure = None,
+                   probability_structure = None,
+                   block_size = 400,
+                   ):
+        """
+        changes self.reward_magnitude and self.reward_probabilities to reflect the specified block structure
+        keeps repeating the specified block structure over all time steps
+
+        if you don't run this function, reward magnitude and probabilities will remain 1 -> no bias blocks in experiment
+
+        :param magnitude_structure: list of tuples of 2 reward magnitudes
+            can also be an array of shape (number_of_blocks, 2)
+            eg: [(m_left1,m_right1),(m_left2,m_right2),...]
+        :param probability_structure: list of tuples of 2 reward magnitudes
+            can also be an array of shape (number_of_blocks, 2)
+            eg: [(m_left1,m_right1),(m_left2,m_right2),...]
+        :param block_size: size of each block
+        :return:
+        """
+        if magnitude_structure is not None:
+            if type(magnitude_structure) != np.ndarray:
+                magnitude_structure = np.array(magnitude_structure)
+            if magnitude_structure.shape[1] != 2:
+                raise ValueError("magnitude structure must have shape (number_of_blocks, 2)"
+                                 "with index [i,0] being left reward magnitude in block i, [i,1] for right")
+            total_blocks_length = magnitude_structure.shape[0] * block_size
+            if total_blocks_length > self.time_steps:
+                raise Warning(
+                    "the time steps necessary for the specified block structure/size are more than the total time steps of the model. "
+                    "block structure will be truncated. Please specify a smaller block size or more total time steps")
+            #actually defining the magnitude blocks
+            for i in range(self.time_steps):
+                b = int((i%total_blocks_length)/block_size)
+                self.reward_magnitude[i] = magnitude_structure[b]
+
+        if probability_structure is not None:
+            if type(probability_structure) != np.ndarray:
+                probability_structure = np.array(probability_structure)
+            if probability_structure.shape[1] != 2:
+                raise ValueError("magnitude structure must have shape (number_of_blocks, 2)"
+                                 "with index [i,0] being left reward magnitude in block i, [i,1] for right")
+            total_blocks_length = probability_structure.shape[0] * block_size
+            if total_blocks_length > self.time_steps:
+                raise Warning(
+                    "the time steps necessary for the specified block structure/size are more than the total time steps of the model. "
+                    "block structure will be truncated. Please specify a smaller block size or more total time steps")
+            # actually defining the probability blocks
+            for i in range(self.time_steps):
+                b = int((i % total_blocks_length) / block_size)
+                self.reward_probability[i] = probability_structure[b]
+
+        # make sure the magnitude and reward structure have the same shape, if not set them back to ones
+        if magnitude_structure is not None and probability_structure is not None:
+            if magnitude_structure.shape != probability_structure.shape:
+                self.reward_magnitude = np.ones((self.time_steps, 2))
+                self.reward_probability = np.ones((self.time_steps, 2))
+                raise ValueError("magnitude and reward structure must be same shape")
 
 
 
 
-def decision_model(params = Params(),
-                   reward_blocks = None):
+class Model():
     """
     Decision Model based on Lak et al 2019:
     Reinforcement biases subsequent perceptual decisions when confidence is low, a widespread behavioral phenomenon
@@ -78,98 +132,111 @@ def decision_model(params = Params(),
     Belief-based reinforcement learning models account for choice updating
     Methods: TDRL model with stimulus belief state
 
-    :param params: parameter Class holding all parameters
-    :return: Results class holding all results
-    """
-    def get_stimulus(type):
-        if type == "equi":
-            # returns stimulus sampled randomly from equidistribution [-1:1]
-            return np.random.uniform(1, -1, 1)[0]
-        elif type == "linspace":
-            # returns stimulus sampled randomly from values equally spaced between -1 and 1
-            return np.random.choice(np.linspace(-1, 1, 10), 1).round(3)[0]
+    run model using run_model()
 
-    def get_percept(stimulus, sigma):
-        # internal estimate of the stimulus is normally distributed
-        # with constant variance around true stimulus contrast sigma
-        percept = np.random.normal(stimulus, sigma, 1)
-        p_percept = 0.5 * (1 + scipy.special.erf(percept / (np.sqrt(2) * sigma)))
-        # returns array of shape [p_left, p_right]
-        return np.array([1 - p_percept, p_percept]).T[0]
+    includes plotting functions:
+    plot_psychometric()
+        plots psychometric, updating matrix, and updating function
+    plot([variables],start,stop)
+        plots variables like stimuli, choices, rewards, or left and right values averaged over window_size
+        in a line graph
+    plot_previous_choice()
+        plots psychometric for each previous choice separately
+    plot_prediction_error()
+        plots prediction error against stimulus
 
-    # set initial values: [value_left, value_right]
-    value = np.full(2,params.init_values, dtype=np.float64)
-
-    # instanciate Results class to store all the results
-    results = Results(params)
-
-    if reward_blocks is None:
-        reward_blocks = np.ones((params.time_steps,2))
-    elif reward_blocks.shape != (params.time_steps,2):
-        raise AttributeError("reward_blocks must be in shape (params.time_steps,2), \n "
-                             "with reward_blocks[0] being left reward_magnitudes, and reward_blocks[0] ")
-
-    for i in range(params.time_steps):
-        stimulus = get_stimulus(params.stimulus_type)
-        percept = get_percept(stimulus, params.sigma)
-        Q = percept * value
-
-        if params.choice_type == "greedy":
-            choice = np.argmax(Q)  # choice -> left = 0, right = 1
-        elif params.choice_type == "beta":
-            choice = 1 / (1 - np.exp(params.beta * (Q[1]-Q[0])))
-
-        # right now confidence is not used
-        # confidence = np.abs(percept)
-
-        # stimulus < 0 and choice = 0 -> reward = 1
-        # stimulus > 0 and choice = 1 -> reward = 0
-        if [-1,1][choice] == np.sign(stimulus): # correct choice
-            #reward = np.random.binomial(1,params.p_rew[choice],1)[0]
-            reward = reward_blocks[i,choice]
-        else: reward = 0
-
-        prediction_error = reward-Q[choice]
-        #update the value by adding the product of learning rule alpha and reward prediction error
-        value[choice] += params.alpha * prediction_error
-
-        # add your results to your Results object
-        results.stimuli[i] = stimulus
-        results.choices[i] = choice
-        results.rewards[i] = reward
-        results.prediction_error[i] = prediction_error
-        results.values[i] = value
-
-    if params.verbose:
-        print(f"finished computing model with {params.time_steps} time steps")
-
-    results.bin_stimuli()
-    return results
-
-
-
-
-class Results():
-    """
-    class for storing all the results of the model
+    #todo useful psychometric for blocks
     """
     def __init__(self,
                  params = Params()):
         self.params = params
+
         self.stimuli = np.empty(params.time_steps,dtype=np.float64)
         self.choices = np.empty(params.time_steps)
         self.rewards = np.empty(params.time_steps)
         self.prediction_error = np.empty(params.time_steps)
         self.values = np.empty((params.time_steps,2))
+
         self.rewards_smooth = None
         self.values_left_smooth = None
         self.values_right_smooth = None
         self.choices_smooth = None
+
         self.psychometric = None
         self.updating_matrix = None
         self.updating_function = None
 
-    def smooth_all(self, window_size = 10):
+    def run_model(self,
+                  params=None):
+        """
+        runs the model, saving all results into itself
+
+        #todo brief description of model
+
+        """
+
+        def get_stimulus(type):
+            if type == "equi":
+                # returns stimulus sampled randomly from equidistribution [-1:1]
+                return np.random.uniform(1, -1, 1)[0]
+            elif type == "linspace":
+                # returns stimulus sampled randomly from values equally spaced between -1 and 1
+                return np.random.choice(np.linspace(-1, 1, 10), 1).round(3)[0]
+
+        def get_percept(stimulus, sigma):
+            # internal estimate of the stimulus is normally distributed
+            # with constant variance around true stimulus contrast sigma
+            percept = np.random.normal(stimulus, sigma, 1)
+            p_percept = 0.5 * (1 + scipy.special.erf(percept / (np.sqrt(2) * sigma)))
+            # returns array of shape [p_left, p_right]
+            return np.array([1 - p_percept, p_percept]).T[0]
+
+        # set initial values: [value_left, value_right]
+        value = np.full(2, self.params.init_values, dtype=np.float64)
+
+        if params is not None:
+            self.params = params
+
+        for i in range(self.params.time_steps):
+            stimulus = get_stimulus(self.params.stimulus_type)
+            percept = get_percept(stimulus, self.params.sigma)
+            Q = percept * value
+
+            if self.params.choice_type == "greedy":
+                choice = np.argmax(Q)  # choice -> left = 0, right = 1
+            elif self.params.choice_type == "beta":
+                choice = 1 / (1 - np.exp(self.params.beta * (Q[1] - Q[0])))
+
+            # right now confidence is not used
+            # confidence = np.abs(percept)
+
+            # stimulus < 0 and choice = 0 -> reward = 1
+            # stimulus > 0 and choice = 1 -> reward = 0
+            if [-1, 1][choice] == np.sign(stimulus):  # correct choice
+                #reward is reward magnitude * 1 or 0 depending on reward probability
+                reward = self.params.reward_magnitude[i, choice]*np.random.binomial(1,self.params.reward_probability[i,choice],1)[0]
+            else:
+                reward = 0
+
+            prediction_error = reward - Q[choice]
+            # update the value by adding the product of learning rule alpha and reward prediction error
+            value[choice] += self.params.alpha * prediction_error
+
+            # add your results to your Results object
+            self.stimuli[i] = stimulus
+            self.choices[i] = choice
+            self.rewards[i] = reward
+            self.prediction_error[i] = prediction_error
+            self.values[i] = value
+
+        if self.params.verbose:
+            print(f"finished computing model with {self.params.time_steps} time steps")
+
+        self.bin_stimuli()
+
+    def smooth_all(self,
+                   window_size = 10
+                   ):
         self.rewards_smooth = sc.moving_avg_smooth(self.rewards, window_size)
         self.values_left_smooth = sc.moving_avg_smooth(self.values[:, 0], window_size)
         self.values_right_smooth = sc.moving_avg_smooth(self.values[:, 1], window_size)
@@ -187,11 +254,26 @@ class Results():
     def plot(self,
              variables=['choices', 'values_left'],
              start = 0,
-             stop = 1):
-        # plot the direct results of the model from [start:stop]
+             stop = 1,
+             window_size = 10
+             ):
+        """
+        directly plots selection of variables of the model in a line graph
 
+        :param variables: list of variables to plot in the line graph
+            must be in ["choices","rewards","values_left","values_right"]
+        :param start:
+            where to start the line plot
+        :param stop:
+            where to end the line plot
+        :param window_size:
+            window size for smoothing function
+            if data already smoothed and you want a different window size:
+             run model.smooth_all(new_window_size) before running this function again
+        :return:
+        """
         if self.values_left_smooth is None:
-            self.smooth_all()
+            self.smooth_all(window_size=window_size)
 
         sns.set_palette("Set2")
         if 'choices' in variables:
@@ -250,7 +332,9 @@ class Results():
         g.set_ylabel("Average Choice")
 
     def plot_prediction_error(self):
-        # plot reward prediction error dependent on stimulus
+        """
+        plots the reward prediction error against the stimulus
+        """
         data = pd.DataFrame(columns = ["mean", "sd"],index = [i for i in np.unique(self.stimuli)])
         for stimulus in np.unique(self.stimuli):
             data.loc[stimulus, "mean"] = np.mean(self.prediction_error[self.stimuli == stimulus])
@@ -279,15 +363,11 @@ class Results():
     #     # wrong thing to calculate fuck
     #     # yea so this doesnt work
 
-    def get_psychometric(self,
-                     difficulty_cut = None,
-                     ):
+    def get_psychometric(self):
         """
-        plotting the psychometrics of the model based on Lak et al 2019:
-        Reinforcement biases subsequent perceptual decisions when confidence is low, a widespread behavioral phenomenon
-        https://elifesciences.org/articles/49834
+        calculates the psychometrics of the model -> see plot_psychometric() description
 
-        explained in detail in figure 1d
+        explained in detail in figure 1 of Lak et al 2019
         """
 
         #plot psychometric curve -> bins for stimulus, corresponding correct choice percentage
@@ -309,9 +389,6 @@ class Results():
         #updating matrix is the difference of the previous
         updating_matrix = psychometric.loc[np.unique(self.stimuli)] - psychometric.loc["current"]
 
-        if difficulty_cut is not None:
-            self.params.difficulty_cut = difficulty_cut
-
         updating_function = pd.DataFrame(index = updating_matrix.index, columns= ["hard","easy"])
         updating_function["easy"] = updating_matrix.loc[:,np.abs(updating_matrix.index > self.params.difficulty_cut)].mean(axis = 1)
         updating_function["hard"] = updating_matrix.loc[:,np.abs(updating_matrix.index < self.params.difficulty_cut)].mean(axis = 1)
@@ -328,11 +405,20 @@ class Results():
                           previous_psychometric = None, #previous psychometric to plot alongside current
                           ):
         """
-        plotting the psychometrics of the model based on Lak et al 2019:
+        plots the psychometrics of the model based on Lak et al 2019:
         Reinforcement biases subsequent perceptual decisions when confidence is low, a widespread behavioral phenomenon
         https://elifesciences.org/articles/49834
 
         explained in detail in figure 1d
+
+        psychometric function (choice average vs stimulus) of all current stimuli
+            along with psychometric of a subset where the previous stimulus was a hard choice
+
+        updating percentage is the difference between all current psychometric and previous stimulus psychometrics
+            for each stimulus and previous stimulus
+
+        updating function is the updating percentage for each previous stimulus,
+            seperated between hard and easy choices based on current stimulus difficulty
         """
 
         if self.updating_matrix is None:
@@ -351,7 +437,6 @@ class Results():
         axes[0].set_ylabel("Average Choice")
 
         # plot updating matrix
-
         img = axes[1].imshow(self.updating_matrix.values.astype(np.float64).T * 100,
                              cmap='RdBu', interpolation='nearest', aspect='auto')
         plt.colorbar(img, ax=axes[1], label="Updating %")  # Add color bar
@@ -364,26 +449,25 @@ class Results():
 
         # plot updating function
         sns.lineplot(data=(self.updating_function * 100), dashes=False, markers=True, ax=axes[2])
-        axes[2].set_xlabel("Current Stimulus")
+        axes[2].set_xlabel("Previous Stimulus")
         axes[2].set_ylabel("Updating %")
 
 
-
-
-#todo figure out why this doesnt work
 
 def plot_params(alphas = [0.2,0.5,0.7],
                 sigmas = [0.2,0.5,0.7],
                 n = 10000,
                 alpha_sigma = None
-):
+                ):
+
     if alpha_sigma is None:
         alpha_sigma = pd.DataFrame(index = alphas,columns=sigmas)
 
         for alpha in alphas:
             for sigma in sigmas:
-                results = decision_model(Params(alpha=alpha, sigma=sigma,time_steps=n,verbose=True))
-                _,matrix,_ = results.get_psychometric()
+                model = Model(Params(alpha=alpha, sigma=sigma,time_steps=n,verbose=True))
+                model.run_model()
+                _,matrix,_ = model.get_psychometric()
                 alpha_sigma.loc[alpha,sigma] = matrix.values
                 ticks = matrix.index
 
@@ -412,12 +496,7 @@ def plot_params(alphas = [0.2,0.5,0.7],
         if i < 2:
             ax.xaxis.set_visible(False)
 
-    from mpl_toolkits.axes_grid1 import make_axes_locatable
-    # Create a single colorbar
-    divider = make_axes_locatable(fig.gca())
-    cax = divider.append_axes("right", size="5%", pad=0.1)
-    cbar = plt.colorbar(im, cax=cax)
-    cbar.set_label('Colorbar Label')
+    fig.colorbar(im, ax=axes.ravel().tolist()).set_label("updating %")
     plt.show()
 
     return alpha_sigma

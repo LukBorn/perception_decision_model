@@ -16,6 +16,10 @@ psychometric for each previous choice (figure 1c in Lak et al 2019)
 
 exploration of alpha and sigmas effects on updating matrix
 
+plot reward prediction error in abhängigkeit von evidenz (stimulus)
+
+
+
 
 SEMI-WORKS:
 
@@ -23,12 +27,12 @@ for some reason the model updating percentages are a lot lower than in the lak e
 
 in the subset psychometric and previous choice psychometric the expected shift is not really visible as much as it should be
 
-alpha_sigma is broken somehow
+
 
 
 TODO:
 
-plot reward prediction error in abhängigkeit von evidenz (stimulus)
+go back to equidistributed stimulus and fix the bin stimulus function
 
 
 implement proper reward bias blocks
