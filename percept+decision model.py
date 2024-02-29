@@ -57,8 +57,12 @@ class Params():
     # reward magnitude: array with [reward_magnitude_left, reward_magnitude_right] at each time step i
         self.reward_magnitude = np.ones((time_steps, 2))
 
-    # reward probability: array with [reward_magnitude_left, reward_magnitude_right] at each time step i
+    # reward probability: array with [reward_probability_left, reward_probability_right] at each time step i
         self.reward_probability = np.ones((time_steps, 2))
+
+        self.magnitude_structure = None
+        self.probability_structure = None
+        self.block_size = None
 
     def get_blocks(self,
                    magnitude_structure = None,
@@ -119,6 +123,9 @@ class Params():
                 self.reward_probability = np.ones((self.time_steps, 2))
                 raise ValueError("magnitude and reward structure must be same shape")
 
+        self.magnitude_structure = magnitude_structure
+        self.probability_structure = probability_structure
+        self.block_size = block_size
 
 
 
@@ -171,8 +178,13 @@ class Model():
         """
         runs the model, saving all results into itself
 
-        #todo brief description of model
-
+        get stimulus
+        add perceptual uncertainty
+        calculate p_left and p_right
+        multiply p_left with value_left, same for right
+        choose left or right based on values
+        recieve reward or not
+        update values based on reward prediction error
         """
 
         def get_stimulus(type):
@@ -254,8 +266,9 @@ class Model():
     def plot(self,
              variables=['choices', 'values_left'],
              start = 0,
-             stop = 1,
-             window_size = 10
+             stop = 10000,
+             window_size = 10,
+             block_colors = None
              ):
         """
         directly plots selection of variables of the model in a line graph
@@ -276,40 +289,57 @@ class Model():
             self.smooth_all(window_size=window_size)
 
         sns.set_palette("Set2")
+        # define the lines for each variable in variables
         if 'choices' in variables:
-            g = sns.lineplot(data=self.choices_smooth[start:stop],
+            g = sns.lineplot(data=self.choices_smooth,
                              alpha=0.6, color="black", label="Decision (0 = left, 1 = right)")
         if 'values_left' in variables:
-            g = sns.lineplot(data=self.values_left_smooth[start:stop],
+            g = sns.lineplot(data=self.values_left_smooth,
                              alpha=0.6, color="purple", label="Values left")
         if 'values_right' in variables:
-            g = sns.lineplot(data=self.values_right_smooth[start:stop],
+            g = sns.lineplot(data=self.values_right_smooth,
                              alpha=0.6, color="blue", label="Values right")
         if 'rewards' in variables:
-            g = sns.lineplot(data=self.rewards_smooth[start:stop],
+            g = sns.lineplot(data=self.rewards_smooth,
                              alpha=0.6, color="green", label="Rewards (0 = no reward, 1 = reward)")
 
-        # if self.params.blocks:
-        #     plt.title('RL block model recovered values')
-        #     plt.xlabel('Trials (averaged over 10)')
-        #     plt.setp(g, yticks=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
-        #     plt.axvspan(0, 10, alpha=0.3, color="orange",
-        #                 label=f"P(Rew)_R={self.params.P_R_rew}, P(Rew)_L={self.params.P_L_rew}")
-        #     plt.axvspan(10, 20, alpha=0.3, color="gainsboro",
-        #                 label=f"P(Rew)_R={self.params.P_L_rew}, P(Rew)_L={self.params.P_R_rew}")
-        #     plt.axvspan(20, 30, alpha=0.3, color="orange")
-        #     plt.axvspan(30, 40, alpha=0.3, color="gainsboro")
-        #     plt.axvspan(40, 50, alpha=0.3, color="orange")
-        #     plt.axvspan(50, 60, alpha=0.3, color="gainsboro")
-        #     plt.axvspan(60, 70, alpha=0.3, color="orange")
-        #     plt.axvspan(70, 80, alpha=0.3, color="gainsboro")
-        #     plt.axvspan(80, 90, alpha=0.3, color="orange")
-        #     plt.axvspan(90, 100, alpha=0.3, color="gainsboro")
-        #     plt.legend(fontsize=7.5, loc='lower right')
-        #     plt.show()
-        #else:
+        # if any type of bias block was used during the experiment
+        if np.unique(self.params.reward_magnitude).shape[0] > 1 or np.unique(self.params.reward_probability).shape[0] > 1:
+            #find indexes where the blocks change, including start and stop index
+            blocks = np.concatenate((np.arange(0,self.params.time_steps,self.params.block_size),np.array([start,stop])))
+            blocks = np.unique(blocks[np.logical_and(blocks>=start,blocks<=stop)])
 
-        plt.title('Basic RL model')
+            #define the colors for the blocks
+            block_color = pd.DataFrame(index=["values", "color"],
+                                       columns=range(np.unique(self.params.reward_magnitude, axis=0).shape[0]))
+            if block_colors is None:
+                block_colors = ["gainsboro","orange","gold","coral","firebrick","sienna"]
+            block_color.loc["color"] = block_colors[:np.unique(self.params.reward_magnitude, axis=0).shape[0]]
+
+            if np.unique(self.params.reward_magnitude).shape[0] > 1:
+                block_color.loc["values"] = list(np.unique(self.params.reward_magnitude,axis=0))
+                block_type = "magnitude"
+            elif np.unique(self.params.reward_probability).shape[0] > 1:
+                block_color.loc["values"] = list(np.unique(self.params.reward_magnitude, axis=0))
+                block_type = "probability"
+
+            for i in range(blocks.shape[0]-1):
+                plt.axvspan(blocks[i],
+                            blocks[i+1],
+                            alpha=0.3,
+                            # im sorry the color selection code is so gross and incoherent
+                            # it just takes the color from color_block where "values" = the current reward_magnitude vector
+                            color=block_color.loc["color",
+                                                  block_color.loc["values"].apply(
+                                                      lambda x: np.array_equal(x, self.params.reward_magnitude[blocks[i]]))].values[0],
+                            label=f"reward {block_type} left: {self.params.reward_magnitude[blocks[i]][0]}\n"
+                                  f"reward {block_type} right: {self.params.reward_magnitude[blocks[i]][1]}" if i < np.unique(self.params.reward_magnitude,axis=0).shape[0] else None
+                )
+
+            plt.title('RL model with reward bias blocks')
+
+        else: plt.title('Basic RL model')
+        plt.xlim(start,stop)
         plt.setp(g, yticks=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
         plt.legend(fontsize=8, loc='lower left')
         plt.show()
@@ -453,10 +483,13 @@ class Model():
         axes[2].set_ylabel("Updating %")
 
 
+    def plot_blocks(self):
+        ...
+
 
 def plot_params(alphas = [0.2,0.5,0.7],
                 sigmas = [0.2,0.5,0.7],
-                n = 10000,
+                n = 50000,
                 alpha_sigma = None
                 ):
 
@@ -501,4 +534,6 @@ def plot_params(alphas = [0.2,0.5,0.7],
 
     return alpha_sigma
 
-
+self = Model(Params())
+self.params.get_blocks([(1,1),(1,0.5),(0.5,1)])
+self.run_model()
