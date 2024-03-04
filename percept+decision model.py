@@ -60,13 +60,17 @@ class Params():
     # reward probability: array with [reward_probability_left, reward_probability_right] at each time step i
         self.reward_probability = np.ones((time_steps, 2))
 
-        self.magnitude_structure = None
-        self.probability_structure = None
+    # blocks -> index of magnitude/probability structure
+        self.blocks = np.empty(time_steps).astype(int)
+
+        self.block_type = []
+        self.magnitude_blocks = None
+        self.probability_blocks = None
         self.block_size = None
 
     def get_blocks(self,
-                   magnitude_structure = None,
-                   probability_structure = None,
+                   magnitude_blocks = None,
+                   probability_blocks = None,
                    block_size = 400,
                    ):
         """
@@ -75,58 +79,56 @@ class Params():
 
         if you don't run this function, reward magnitude and probabilities will remain 1 -> no bias blocks in experiment
 
-        :param magnitude_structure: list of tuples of 2 reward magnitudes
+        :param magnitude_blocks: list of tuples of 2 reward magnitudes
             can also be an array of shape (number_of_blocks, 2)
             eg: [(m_left1,m_right1),(m_left2,m_right2),...]
-        :param probability_structure: list of tuples of 2 reward magnitudes
+        :param probability_blocks: list of tuples of 2 reward magnitudes
             can also be an array of shape (number_of_blocks, 2)
             eg: [(m_left1,m_right1),(m_left2,m_right2),...]
         :param block_size: size of each block
         :return:
         """
-        if magnitude_structure is not None:
-            if type(magnitude_structure) != np.ndarray:
-                magnitude_structure = np.array(magnitude_structure)
-            if magnitude_structure.shape[1] != 2:
+        if probability_blocks is not None:
+            probability_blocks = np.array(probability_blocks)
+            self.block_type.append("probability")
+            if probability_blocks.shape[1] != 2:
                 raise ValueError("magnitude structure must have shape (number_of_blocks, 2)"
                                  "with index [i,0] being left reward magnitude in block i, [i,1] for right")
-            total_blocks_length = magnitude_structure.shape[0] * block_size
+            # define the length of all blocks combined
+            total_blocks_length = probability_blocks.shape[0] * block_size
             if total_blocks_length > self.time_steps:
                 raise Warning(
                     "the time steps necessary for the specified block structure/size are more than the total time steps of the model. "
                     "block structure will be truncated. Please specify a smaller block size or more total time steps")
-            #actually defining the magnitude blocks
-            for i in range(self.time_steps):
-                b = int((i%total_blocks_length)/block_size)
-                self.reward_magnitude[i] = magnitude_structure[b]
 
-        if probability_structure is not None:
-            if type(probability_structure) != np.ndarray:
-                probability_structure = np.array(probability_structure)
-            if probability_structure.shape[1] != 2:
+        if magnitude_blocks is not None:
+            magnitude_blocks = np.array(magnitude_blocks)
+            self.block_type.append("magnitude")
+            if magnitude_blocks.shape[1] != 2:
                 raise ValueError("magnitude structure must have shape (number_of_blocks, 2)"
                                  "with index [i,0] being left reward magnitude in block i, [i,1] for right")
-            total_blocks_length = probability_structure.shape[0] * block_size
+            # define the length of all blocks combined
+            total_blocks_length = magnitude_blocks.shape[0] * block_size
             if total_blocks_length > self.time_steps:
                 raise Warning(
                     "the time steps necessary for the specified block structure/size are more than the total time steps of the model. "
                     "block structure will be truncated. Please specify a smaller block size or more total time steps")
-            # actually defining the probability blocks
-            for i in range(self.time_steps):
-                b = int((i % total_blocks_length) / block_size)
-                self.reward_probability[i] = probability_structure[b]
+
 
         # make sure the magnitude and reward structure have the same shape, if not set them back to ones
-        if magnitude_structure is not None and probability_structure is not None:
-            if magnitude_structure.shape != probability_structure.shape:
+        if magnitude_blocks is not None and probability_blocks is not None:
+            if magnitude_blocks.shape != probability_blocks.shape:
                 self.reward_magnitude = np.ones((self.time_steps, 2))
                 self.reward_probability = np.ones((self.time_steps, 2))
                 raise ValueError("magnitude and reward structure must be same shape")
 
-        self.magnitude_structure = magnitude_structure
-        self.probability_structure = probability_structure
-        self.block_size = block_size
 
+        for i in range(self.time_steps):
+            self.blocks[i] = int((i%total_blocks_length)/block_size)
+
+        self.magnitude_blocks = magnitude_blocks
+        self.probability_blocks = probability_blocks
+        self.block_size = block_size
 
 
 class Model():
@@ -151,8 +153,10 @@ class Model():
         plots psychometric for each previous choice separately
     plot_prediction_error()
         plots prediction error against stimulus
-
-    #todo useful psychometric for blocks
+    plot_block_psychometric()
+        plots the psychometric for each blocktype seperately
+    plot_previous_bias()
+        plots psychometric for if your previous choice was biased for or against
     """
     def __init__(self,
                  params = Params()):
@@ -209,6 +213,16 @@ class Model():
         if params is not None:
             self.params = params
 
+        reward_magnitudes = np.ones((self.params.time_steps, 2))
+        reward_probabilities = np.ones((self.params.time_steps, 2))
+        for i in range(self.params.time_steps):
+            if "magnitude" in self.params.block_type:
+                reward_magnitudes[i] = self.params.magnitude_blocks[self.params.blocks[i]]
+            if "probability" in self.params.block_type:
+                reward_probabilities[i] = self.params.probability_blocks[self.params.blocks[i]]
+        self.reward_magnitudes = reward_magnitudes
+        self.reward_probabilities = reward_probabilities
+
         for i in range(self.params.time_steps):
             stimulus = get_stimulus(self.params.stimulus_type)
             percept = get_percept(stimulus, self.params.sigma)
@@ -226,7 +240,7 @@ class Model():
             # stimulus > 0 and choice = 1 -> reward = 0
             if [-1, 1][choice] == np.sign(stimulus):  # correct choice
                 #reward is reward magnitude * 1 or 0 depending on reward probability
-                reward = self.params.reward_magnitude[i, choice]*np.random.binomial(1,self.params.reward_probability[i,choice],1)[0]
+                reward = reward_magnitudes[i,choice]*np.random.binomial(1,reward_probabilities[i,choice],1)[0]
             else:
                 reward = 0
 
@@ -249,12 +263,14 @@ class Model():
     def smooth_all(self,
                    window_size = 10
                    ):
+        # todo add a gaussian convolution method
         self.rewards_smooth = sc.moving_avg_smooth(self.rewards, window_size)
         self.values_left_smooth = sc.moving_avg_smooth(self.values[:, 0], window_size)
         self.values_right_smooth = sc.moving_avg_smooth(self.values[:, 1], window_size)
         self.choices_smooth = sc.moving_avg_smooth(self.choices, window_size)
 
     def bin_stimuli(self):
+        #todo fix this
         if self.params.stimulus_type in ["equi"]:
             #bin the equidistributed variables into num-1 bins
             #with the value assigned corresponding to the max of the bins
@@ -304,36 +320,35 @@ class Model():
                              alpha=0.6, color="green", label="Rewards (0 = no reward, 1 = reward)")
 
         # if any type of bias block was used during the experiment
-        if np.unique(self.params.reward_magnitude).shape[0] > 1 or np.unique(self.params.reward_probability).shape[0] > 1:
+        if np.unique(self.params.magnitude_blocks).shape[0] > 1 or np.unique(self.params.probability_blocks).shape[0] > 1:
             #find indexes where the blocks change, including start and stop index
             blocks = np.concatenate((np.arange(0,self.params.time_steps,self.params.block_size),np.array([start,stop])))
             blocks = np.unique(blocks[np.logical_and(blocks>=start,blocks<=stop)])
 
             #define the colors for the blocks
             block_color = pd.DataFrame(index=["values", "color"],
-                                       columns=range(np.unique(self.params.reward_magnitude, axis=0).shape[0]))
+                                       columns=range(self.params.magnitude_blocks.shape[0]))
             if block_colors is None:
                 block_colors = ["gainsboro","orange","gold","coral","firebrick","sienna"]
-            block_color.loc["color"] = block_colors[:np.unique(self.params.reward_magnitude, axis=0).shape[0]]
+            block_color.loc["color"] = block_colors[:self.params.magnitude_blocks.shape[0]]
 
-            if np.unique(self.params.reward_magnitude).shape[0] > 1:
-                block_color.loc["values"] = list(np.unique(self.params.reward_magnitude,axis=0))
+            if self.params.magnitude_blocks.shape[0] > 1:
+                block_color.loc["values"] = list(self.params.magnitude_blocks)
                 block_type = "magnitude"
-            elif np.unique(self.params.reward_probability).shape[0] > 1:
-                block_color.loc["values"] = list(np.unique(self.params.reward_magnitude, axis=0))
+            elif self.params.probability_blocks.shape[0] > 1:
+                block_color.loc["values"] = list(self.params.probability_blocks)
                 block_type = "probability"
 
             for i in range(blocks.shape[0]-1):
-                plt.axvspan(blocks[i],
-                            blocks[i+1],
+                plt.axvspan(blocks[i], #starts at this index
+                            blocks[i+1], #ends at this index
                             alpha=0.3,
                             # im sorry the color selection code is so gross and incoherent
                             # it just takes the color from color_block where "values" = the current reward_magnitude vector
-                            color=block_color.loc["color",
-                                                  block_color.loc["values"].apply(
-                                                      lambda x: np.array_equal(x, self.params.reward_magnitude[blocks[i]]))].values[0],
-                            label=f"reward {block_type} left: {self.params.reward_magnitude[blocks[i]][0]}\n"
-                                  f"reward {block_type} right: {self.params.reward_magnitude[blocks[i]][1]}" if i < np.unique(self.params.reward_magnitude,axis=0).shape[0] else None
+                            color=block_color.loc["color",block_color.loc["values"].apply(
+                                                      lambda x: np.array_equal(x, self.params.magnitude_blocks[self.params.blocks[blocks[i]]]))].values[0],
+                            label=f"reward {self.params.reward_type} left: {self.params.magnitude_blocks[self.params.blocks[blocks[i]]][0]}\n"
+                                  f"reward {block_type} right: {self.params.magnitude_blocks[self.params.blocks[blocks[i]]][1]}" if i < self.params.magnitude_blocks.shape[0] else None
                 )
 
             plt.title('RL model with reward bias blocks')
@@ -376,8 +391,6 @@ class Model():
         plt.xlabel('Stimulus')
         plt.ylabel('Reward Prediction Error')
 
-
-
     # def plot_previous_rewarded(self):
     #     psychometric = pd.DataFrame(index=["current","previous"],
     #                                 columns=[i for i in np.unique(self.stimuli)])
@@ -403,8 +416,8 @@ class Model():
         #plot psychometric curve -> bins for stimulus, corresponding correct choice percentage
         self.bin_stimuli()
 
-        psychometric = pd.DataFrame(index=["current"]+[i for i in np.unique(self.stimuli)],
-                                    columns = [i for i in np.unique(self.stimuli)])
+        psychometric = pd.DataFrame(index=["current"]+list(np.unique(self.stimuli)),
+                                    columns = np.unique(self.stimuli))
 
         for stimulus in np.unique(self.stimuli):
             psychometric.loc["current", stimulus] = np.mean(self.choices[self.stimuli == stimulus])
@@ -482,9 +495,63 @@ class Model():
         axes[2].set_xlabel("Previous Stimulus")
         axes[2].set_ylabel("Updating %")
 
+def plot_block_psychometric(self):
+    data = pd.DataFrame(index = np.unique(self.params.blocks),
+                        columns = np.unique(self.stimuli))
+    for block in np.unique(self.params.blocks):
+        for stimulus in np.unique(self.stimuli):
+            data.loc[block,stimulus] = np.mean(self.choices[np.logical_and(self.params.blocks == block,
+                                                                           self.stimuli == stimulus)])
+        g = sns.lineplot(data = data.loc[block],dashes=False, markers=True, palette="Set1")
+        if len(self.params.block_type) > 1:
+            g.set_label(f"Reward magnitudes: {self.params.magnitude_blocks[block]} \n"
+                       f"Reward probabilities: {self.params.probability_blocks[block]}")
+        else:
+            g.set_label(f"Reward {self.params.block_type}: "
+                        f"{self.params.magnitude_blocks[block] if "magnitude" in self.params.block_type else self.params.probability_blocks[block]}")
+    plt.title("Psychometrics seperated by block")
+    g.set_xlabel("Current Stimulus")
+    g.set_ylabel("Average Choice")
+    plt.legend(fontsize=8, loc='lower right')
+    plt.show()
+    #todo find out why the legend aint workin
 
-    def plot_blocks(self):
-        ...
+
+def plot_previous_bias(self,
+                       plot = "reward"):
+    '''
+    plot reward prediction error? based on previous lean or previous rewarded block
+    psychometric
+    :return:
+    '''
+    #get lean and rich blocks
+    if self.params.block_type == "magnitude":
+        bias = np.argmax(self.params.reward_magnitude, axis = 1)
+        bias[self.params.reward_magnitude[:, 0] == self.params.reward_magnitude[:, 1]] = 2
+    elif self.params.block_type == "probability":
+        bias = np.argmax(self.params.reward_probability, axis=1)
+        bias[self.params.reward_probability[:, 0] == self.params.reward_probability[:, 1]] = 2
+    else:
+        raise ValueError("u suck lol")
+    # 0 and 1 -> previous bias, 2 -> unbiased
+    previous_bias = np.concatenate(([2],bias[:-1]))
+
+    previous_stimulus = np.concatenate(([],self.stimulus[:,-1]))
+    previous_reward = np.concatenate(([],self.rewards[:,-1]))
+    previous_choices = np.concatenate(([0],self.choices[:,-1]))
+
+
+    # previous correct and rich, correct and lean,
+    # previous incorrect and rich, incorrect and lean
+    # previous correct and unbiased, incorrect and unbiased
+
+    # previous rewarded and rich, rewarded and lean
+    # previous unrewarded and rich, unrewarded and lean
+    # previous rewarded and unbiased, unrewarded and unbiased
+    #
+
+    ...
+
 
 
 def plot_params(alphas = [0.2,0.5,0.7],
