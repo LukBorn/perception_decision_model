@@ -206,6 +206,10 @@ class Model():
             # returns array of shape [p_left, p_right]
             return np.array([1 - p_percept, p_percept]).T[0]
 
+        def get_investment():
+            # todo output a random number between (0.5 and 5)
+            return ...
+
         # set initial values: [value_left, value_right]
         value = np.full(2, self.params.init_values, dtype=np.float64)
 
@@ -222,16 +226,25 @@ class Model():
             elif self.params.choice_type == "beta":
                 choice = 1 / (1 - np.exp(self.params.beta * (Q[1] - Q[0])))
 
-            # right now confidence is not used
+
+            # the random number independent of stimulus meant to represent the random time investment necessary to get a reward
+            # investment = get_investment()
+
+            # # todo add investment as a function of statistcal confidence with several parameters
+            # # source Hangya et al. 2016 - A mathematical framework for statistical decision confidence
             # confidence = np.abs(percept)
 
             # stimulus < 0 and choice = 0 -> reward = 1
             # stimulus > 0 and choice = 1 -> reward = 0
-            if [-1, 1][choice] == np.sign(stimulus):  # correct choice
-                #reward is reward magnitude * 1 or 0 depending on reward probability
-                reward = self.params.reward_magnitude[i,choice]*np.random.binomial(1,self.params.reward_probability[i,choice],1)[0]
-            else:
+            if [-1, 1][choice] != np.sign(stimulus): # incorrect choice
                 reward = 0
+            #if function(confidence) < investment: # investment bigger than internal confidence calculation
+            #   reward = 0
+            else:
+                #reward is reward magnitude * 1 or 0 depending on reward probability
+                # in case of HALIP model probability should be uniformly 0.95%
+                reward = self.params.reward_magnitude[i,choice]*np.random.binomial(1,self.params.reward_probability[i,choice],1)[0]
+
 
             prediction_error = reward - Q[choice]
             # update the value by adding the product of learning rule alpha and reward prediction error
@@ -249,14 +262,6 @@ class Model():
 
         self.bin_stimuli()
 
-    def smooth_all(self,
-                   window_size = 10
-                   ):
-        # todo add a gaussian convolution method
-        self.rewards_smooth = sc.moving_avg_smooth(self.rewards, window_size)
-        self.values_left_smooth = sc.moving_avg_smooth(self.values[:, 0], window_size)
-        self.values_right_smooth = sc.moving_avg_smooth(self.values[:, 1], window_size)
-        self.choices_smooth = sc.moving_avg_smooth(self.choices, window_size)
 
     def bin_stimuli(self):
         #todo fix this
@@ -273,7 +278,7 @@ class Model():
              start = 0,
              stop = 10000,
              window_size = 10,
-             block_colors = None
+             block_colors = None,
              ):
         """
         directly plots selection of variables of the model in a line graph
@@ -286,26 +291,20 @@ class Model():
             where to end the line plot
         :param window_size:
             window size for smoothing function
-            if data already smoothed and you want a different window size:
-             run model.smooth_all(new_window_size) before running this function again
-        :return:
         """
-        if self.values_left_smooth is None:
-            self.smooth_all(window_size=window_size)
-
         sns.set_palette("Set2")
         # define the lines for each variable in variables
         if 'choices' in variables:
-            g = sns.lineplot(data=self.choices_smooth,
+            g = sns.lineplot(data=sc.moving_avg_smooth(self.choices, window_size),
                              alpha=0.6, color="black", label="Decision (0 = left, 1 = right)")
         if 'values_left' in variables:
-            g = sns.lineplot(data=self.values_left_smooth,
+            g = sns.lineplot(data=self.values[:, 0],
                              alpha=0.6, color="purple", label="Values left")
         if 'values_right' in variables:
-            g = sns.lineplot(data=self.values_right_smooth,
+            g = sns.lineplot(data=self.values[:, 1],
                              alpha=0.6, color="blue", label="Values right")
         if 'rewards' in variables:
-            g = sns.lineplot(data=self.rewards_smooth,
+            g = sns.lineplot(data=sc.moving_avg_smooth(self.rewards_smooth, window_size),
                              alpha=0.6, color="green", label="Rewards (0 = no reward, 1 = reward)")
 
         # if any type of bias block was used during the experiment
@@ -350,7 +349,7 @@ class Model():
 
     def plot_previous_choice(self):
         """
-        plots the stimulus vs choice average, seperately for each previous choice
+        plots the spychometric (stimulus vs choice average) seperately for each previous choice
         """
         data = pd.DataFrame(columns=["previous_left", "previous_right"],
                             index=[i for i in np.unique(self.stimuli)])
@@ -506,118 +505,146 @@ class Model():
         plt.show()
 
 
-def plot_previous_bias(self,
-                       metric = "correct",
-                       plot = "metric"):
-    '''
-    plot are based on previous lean or previous rewarded block
-    psychometric
-    :return:
-    '''
-    # get lean and rich blocks
-    # 0 -> lean, 1 -> rich, 2 -> unbiased
-    if "magnitude" in self.params.block_type:
-        bias = np.argmax(self.params.reward_magnitude, axis = 1)
-        # 0 -> lean (biased against), 1 -> rich (biased for)
-        bias = (bias == self.choices.astype(int)).astype(int)
-        # set unbiased trials to 2
-        bias[self.params.reward_magnitude[:, 0] == self.params.reward_magnitude[:, 1]] = 2
-    elif "probability" in self.params.block_type:
-        bias = np.argmax(self.params.reward_probability, axis=1)
-        bias = (bias == self.choices.astype(int)).astype(int)
-        # set unbiased trials to 2
-        bias[self.params.reward_probability[:, 0] == self.params.reward_probability[:, 1]] = 2
-    else:
-        raise ValueError("u suck lol")
-    previous_bias = np.concatenate(([2],bias[:-1]))
+    def plot_previous_bias(self,
+                           metric = "correct",
+                           plot = "metric"):
+        '''
+        plot are based on previous lean or previous rewarded block
+        psychometric
+        :return:
+        '''
+        # get lean and rich blocks
+        # 0 -> lean, 1 -> rich, 2 -> unbiased
+        if "magnitude" in self.params.block_type:
+            bias = np.argmax(self.params.reward_magnitude, axis = 1)
+            # 0 -> lean (biased against), 1 -> rich (biased for)
+            bias = (bias == self.choices.astype(int)).astype(int)
+            # set unbiased trials to 2
+            bias[self.params.reward_magnitude[:, 0] == self.params.reward_magnitude[:, 1]] = 2
+        elif "probability" in self.params.block_type:
+            bias = np.argmax(self.params.reward_probability, axis=1)
+            bias = (bias == self.choices.astype(int)).astype(int)
+            # set unbiased trials to 2
+            bias[self.params.reward_probability[:, 0] == self.params.reward_probability[:, 1]] = 2
 
-    # get previous metric
-    if metric == "correct":
-        # 1 -> previous choice matches stimulus -> correct, 0 -> incorrect
-        previous_reward = (np.sign(np.concatenate(([1],self.stimuli[:-1]))) == np.concatenate(([0], self.choices[:-1]))).astype(int)
-        # todo get this to work
-    elif metric == "reward":
-        # 1 -> previous choice was rewarded, 0 -> previous choice was not rewarded
-        previous_reward = np.sign(np.concatenate(([0], self.rewards[:-1])))
+        previous_bias = np.concatenate(([2],bias[:-1]))
 
-    # define dataframe for psychometrics to be stored in
-    data = pd.DataFrame(index = ["correct_rich","correct_lean","correct_unbiased",
-                                 "incorrect_rich","incorrect_lean","incorrect_unbiased"],
-                        columns=np.unique(self.stimuli))
-    for stimulus in np.unique(self.stimuli):
-        # previous correct/rewarded and rich
-        data.loc["correct_lean", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 1,
-                                                                                                previous_bias == 0),
-                                                                                                self.stimuli==stimulus)])
-        # previous correct/rewarded and lean
-        data.loc["correct_rich", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 1,
-                                                                                                previous_bias == 1),
-                                                                                                self.stimuli==stimulus)])
-        # previous correct/rewarded and unbiased
-        data.loc["correct_unbiased", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 1,
-                                                                                                    previous_bias == 2),
+        # get previous metric
+        if metric == "correct":
+            # 1 -> previous choice matches stimulus -> correct, 0 -> incorrect
+            previous_reward = (np.sign(np.concatenate(([1],self.stimuli[:-1]))) == np.concatenate(([0], self.choices[:-1]))).astype(int)
+            # todo get this to work
+        elif metric == "reward":
+            # 1 -> previous choice was rewarded, 0 -> previous choice was not rewarded
+            previous_reward = np.sign(np.concatenate(([0], self.rewards[:-1])))
+
+        # define dataframe for psychometrics to be stored in
+        data = pd.DataFrame(index = ["correct_rich","correct_lean","correct_unbiased",
+                                     "incorrect_rich","incorrect_lean","incorrect_unbiased"],
+                            columns=np.unique(self.stimuli))
+        for stimulus in np.unique(self.stimuli):
+            # previous correct/rewarded and rich
+            data.loc["correct_lean", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 1,
+                                                                                                    previous_bias == 0),
                                                                                                     self.stimuli==stimulus)])
-        # previous incorrect/unrewarded and rich
-        data.loc["incorrect_lean", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 0,
-                                                                                                  previous_bias == 0),
-                                                                                                  self.stimuli==stimulus)])
-        # previous incorrect/unrewarded and rich
-        data.loc["incorrect_rich", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 0,
-                                                                                                  previous_bias == 1),
-                                                                                                  self.stimuli==stimulus)])
-        # previous incorrect/unrewarded and rich
-        data.loc["incorrect_unbiased", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 0,
-                                                                                                      previous_bias == 2),
+            # previous correct/rewarded and lean
+            data.loc["correct_rich", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 1,
+                                                                                                    previous_bias == 1),
+                                                                                                    self.stimuli==stimulus)])
+            # previous correct/rewarded and unbiased
+            data.loc["correct_unbiased", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 1,
+                                                                                                        previous_bias == 2),
+                                                                                                        self.stimuli==stimulus)])
+            # previous incorrect/unrewarded and rich
+            data.loc["incorrect_lean", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 0,
+                                                                                                      previous_bias == 0),
                                                                                                       self.stimuli==stimulus)])
-    # use the right metric in the index
-    if metric == "reward":
-        data.index = ["rewarded_lean", "rewarded_rich", "rewarded_unbiased",
-                      "unrewarded_lean", "unrewarded_rich", "unrewarded_unbiased"]
+            # previous incorrect/unrewarded and rich
+            data.loc["incorrect_rich", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 0,
+                                                                                                      previous_bias == 1),
+                                                                                                      self.stimuli==stimulus)])
+            # previous incorrect/unrewarded and rich
+            data.loc["incorrect_unbiased", stimulus] = np.mean(self.choices[np.logical_and(np.logical_and(previous_reward == 0,
+                                                                                                          previous_bias == 2),
+                                                                                                          self.stimuli==stimulus)])
+        # use the right metric in the index
+        if metric == "reward":
+            data.index = ["rewarded_lean", "rewarded_rich", "rewarded_unbiased",
+                          "unrewarded_lean", "unrewarded_rich", "unrewarded_unbiased"]
 
 
-    # calculate the difference between the biases for each metric
-    data.loc["previous_lean"] = data.iloc[0] - data.iloc[3]
-    data.loc["previous_rich"] = data.iloc[1] - data.iloc[4]
-    data.loc["previous_unbiased"] = data.iloc[2] - data.iloc[5]
+        # calculate the difference between the biases for each metric
+        data.loc["previous_lean"] = data.iloc[0] - data.iloc[3]
+        data.loc["previous_rich"] = data.iloc[1] - data.iloc[4]
+        data.loc["previous_unbiased"] = data.iloc[2] - data.iloc[5]
 
 
 
-    # plot the
-    if "bias" in plot:
-        fig, axes = plt.subplots(nrows=1, ncols=2)
-        sns.lineplot(data=data.iloc[0:3].T, dashes=False, markers=True,ax=axes[0])
-        axes[0].set_title(f"Psychometric for previously {data.index[0].rstrip("_lean")} choices")
-        axes[0].set_xlabel("Current Stimulus")
-        axes[0].set_ylabel("Average Choice")
-        sns.lineplot(data=data.iloc[3:6].T, dashes=False, markers=True, ax=axes[1])
-        axes[1].set_title(f"Psychometric for previously {data.index[3].rstrip("_lean")} choices")
-        axes[1].set_xlabel("Current Stimulus")
-        axes[1].set_ylabel("Average Choice")
-        plt.show()
+        # plot the
+        if "bias" in plot:
+            fig, axes = plt.subplots(nrows=1, ncols=2)
+            sns.lineplot(data=data.iloc[0:3].T, dashes=False, markers=True,ax=axes[0])
+            axes[0].set_title(f"Psychometric for previously {data.index[0].rstrip("_lean")} choices")
+            axes[0].set_xlabel("Current Stimulus")
+            axes[0].set_ylabel("Average Choice")
+            sns.lineplot(data=data.iloc[3:6].T, dashes=False, markers=True, ax=axes[1])
+            axes[1].set_title(f"Psychometric for previously {data.index[3].rstrip("_lean")} choices")
+            axes[1].set_xlabel("Current Stimulus")
+            axes[1].set_ylabel("Average Choice")
+            plt.show()
 
-    #
-    if "metric" in plot:
-        fig, axes = plt.subplots(nrows=1,ncols=4)
-        sns.lineplot(data=data.iloc[[0,3]].T, dashes=False, markers=True, ax=axes[0])
-        axes[0].set_title(f"Psychometric for previously lean choices")
-        axes[0].set_xlabel("Current Stimulus")
-        axes[0].set_ylabel("Average Choice")
-        sns.lineplot(data=data.iloc[[1,4]].T, dashes=False, markers=True, ax=axes[1])
-        axes[1].set_title(f"Psychometric for previously rich choices")
-        axes[1].set_xlabel("Current Stimulus")
-        axes[1].set_ylabel("Average Choice")
-        sns.lineplot(data=data.iloc[[2,5]].T, dashes=False, markers=True, ax=axes[2])
-        axes[2].set_title(f"Psychometric for previously unbiased choices")
-        axes[2].set_xlabel("Current Stimulus")
-        axes[2].set_ylabel("Average Choice")
-        sns.lineplot(data=data.iloc[6:9].T, dashes=False, markers=True, ax=axes[3])
-        axes[3].set_title("difference rewarded vs unrewarded")
-        axes[3].set_xlabel("Current Stimulus")
-        axes[3].set_ylabel("Difference")
+        #
+        if "metric" in plot:
+            fig, axes = plt.subplots(nrows=1,ncols=4)
+            sns.lineplot(data=data.iloc[[0,3]].T, dashes=False, markers=True, ax=axes[0])
+            axes[0].set_title(f"Psychometric for previously lean choices")
+            axes[0].set_xlabel("Current Stimulus")
+            axes[0].set_ylabel("Average Choice")
+            sns.lineplot(data=data.iloc[[1,4]].T, dashes=False, markers=True, ax=axes[1])
+            axes[1].set_title(f"Psychometric for previously rich choices")
+            axes[1].set_xlabel("Current Stimulus")
+            axes[1].set_ylabel("Average Choice")
+            sns.lineplot(data=data.iloc[[2,5]].T, dashes=False, markers=True, ax=axes[2])
+            axes[2].set_title(f"Psychometric for previously unbiased choices")
+            axes[2].set_xlabel("Current Stimulus")
+            axes[2].set_ylabel("Average Choice")
+            sns.lineplot(data=data.iloc[6:9].T, dashes=False, markers=True, ax=axes[3])
+            axes[3].set_title("difference rewarded vs unrewarded")
+            axes[3].set_xlabel("Current Stimulus")
+            axes[3].set_ylabel("Difference")
 
-    return data
+        return data
 
-#todo plot reward prediction error based on previous bias
+    def plot_bias_prediction_error(self):
+        # get lean and rich blocks
+        # 0 -> lean, 1 -> rich, 2 -> unbiased
+        if "magnitude" in self.params.block_type:
+            bias = np.argmax(self.params.reward_magnitude, axis=1)
+            # 0 -> lean (biased against), 1 -> rich (biased for)
+            bias = (bias == self.choices.astype(int)).astype(int)
+            # set unbiased trials to 2
+            bias[self.params.reward_magnitude[:, 0] == self.params.reward_magnitude[:, 1]] = 2
+        elif "probability" in self.params.block_type:
+            bias = np.argmax(self.params.reward_probability, axis=1)
+            bias = (bias == self.choices.astype(int)).astype(int)
+            # set unbiased trials to 2
+            bias[self.params.reward_probability[:, 0] == self.params.reward_probability[:, 1]] = 2
+
+        previous_bias = np.concatenate(([2], bias[:-1]))
+
+        data = pd.DataFrame(columns = np.unique(previous_bias),
+                            index = [i for i in np.unique(self.stimuli)])
+
+        for bias in np.unique(previous_bias):
+            for stimulus in np.unique(self.stimuli):
+                data.loc[stimulus,bias] = np.mean(self.prediction_error[np.logical_and(self.stimuli == stimulus, previous_bias == bias)])
+
+        data.columns = ["lean","rich","unbiased"]
+
+        sns.lineplot(data=data, dashes = False)
+
+        plt.xlabel('Stimulus')
+        plt.ylabel('Average Reward Prediction Error')
 
 def plot_params(alphas = [0.2,0.5,0.7],
                 sigmas = [0.2,0.5,0.7],
@@ -670,3 +697,5 @@ def plot_params(alphas = [0.2,0.5,0.7],
 # self = Model(Params(time_steps= 1000000))
 # self.params.get_blocks([(1,1),(1,0.5),(0.5,1)])
 # self.run_model()
+
+
