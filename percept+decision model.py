@@ -5,6 +5,7 @@ import scipy
 import matplotlib.pyplot as plt
 import seaborn as sns
 import scripts as sc
+from tqdm import tqdm
 
 class Params():
     """
@@ -12,7 +13,6 @@ class Params():
     """
     def __init__(self,
                  seed = 42,
-                 verbose = False,
                  init_values = 1,
                  alpha = 0.5,
                  sigma = np.sqrt(0.2),
@@ -20,11 +20,12 @@ class Params():
                  stimulus_type = "linspace",
                  choice_type = "greedy",
                  beta = 9.097,
+                 model_confidence= True,
+                 delta = 1,
                  difficulty_cut = 0.6
                  ):
 
         np.random.seed = seed
-        self.verbose = verbose
 
     # inital values for value function
         self.init_values = init_values
@@ -49,7 +50,14 @@ class Params():
         self.choice_type = choice_type
 
     # beta -> standard deviation of
+        # actually im not fully sure i understand this, i think its like epsilon of epsilon greedy k-armed bandit
         self.beta = beta
+
+    # model_confidence -> models confidence if True
+        self.model_confidence = model_confidence
+
+    # delta -> factor that the investment sample is multiplied with
+        self.delta = delta
 
     # the cut for psychometric evaluation between an easy and a hard difficulty stimulus
         self.difficulty_cut = difficulty_cut
@@ -117,8 +125,8 @@ class Params():
             if total_blocks_length > self.time_steps:
                 raise Warning("the time steps necessary for the specified block structure/size are more than the total time steps of the model. block structure will be truncated. Please specify a smaller block size or more total time steps")
 
-
-        for i in range(self.time_steps):
+        print("Calculating block structure")
+        for i in tqdm(range(self.time_steps)):
             self.blocks[i] = int((i%total_blocks_length)/block_size)
             if "magnitude" in self.block_type:
                 self.reward_magnitude[i] = magnitude_structure[self.blocks[i]]
@@ -162,10 +170,12 @@ class Model():
         self.params = params
 
         self.stimuli = np.empty(params.time_steps,dtype=np.float64)
+        self.percept = np.empty(params.time_steps,dtype=np.float64)
         self.choices = np.empty(params.time_steps)
         self.rewards = np.empty(params.time_steps)
         self.prediction_error = np.empty(params.time_steps)
         self.values = np.empty((params.time_steps,2))
+        self.confidence = np.empty(params.time_steps,dtype=np.float64)
 
         self.rewards_smooth = None
         self.values_left_smooth = None
@@ -189,65 +199,51 @@ class Model():
         recieve reward or not
         update values based on reward prediction error
         """
-
-        def get_stimulus(type):
-            if type == "equi":
-                # returns stimulus sampled randomly from equidistribution [-1:1]
-                return np.random.uniform(1, -1, 1)[0]
-            elif type == "linspace":
-                # returns stimulus sampled randomly from values equally spaced between -1 and 1
-                return np.random.choice(np.linspace(-1, 1, 10), 1).round(3)[0]
-
-        def get_percept(stimulus, sigma):
-            # internal estimate of the stimulus is normally distributed
-            # with constant variance around true stimulus contrast sigma
-            percept = np.random.normal(stimulus, sigma, 1)
-            p_percept = 0.5 * (1 + scipy.special.erf(percept / (np.sqrt(2) * sigma)))
-            # returns array of shape [p_left, p_right]
-            return np.array([1 - p_percept, p_percept]).T[0]
-
-        def get_investment():
-            # todo output a random number between (0.5 and 5)
-            return ...
+        #generate params class if none is specified
+        if params is not None:
+            self.params = params
 
         # set initial values: [value_left, value_right]
         value = np.full(2, self.params.init_values, dtype=np.float64)
 
-        if params is not None:
-            self.params = params
+        print("Model Running:")
+        for i in tqdm(range(self.params.time_steps)):
+            # generate stimulus: random sample from one of 10 equally spaced stimuli between -1 and 1
+            stimulus = np.random.choice(np.linspace(-1, 1, 10), 1).round(3)[0]
 
-        for i in range(self.params.time_steps):
-            stimulus = get_stimulus(self.params.stimulus_type)
-            percept = get_percept(stimulus, self.params.sigma)
-            Q = percept * value
+            # generate internal estimate of the stimulus
+            percept = np.random.normal(stimulus, self.params.sigma, 1)[0]
+            self.percept[i] = percept
 
+            # calculate value-adjusted percept probability Q
+            p_percept = 0.5 * (1 + scipy.special.erf(percept / (np.sqrt(2) * self.params.sigma)))
+            p_percept = np.array([1 - p_percept, p_percept]).T[0]
+            Q = p_percept * value
+
+            # calculate choice based on Q
             if self.params.choice_type == "greedy":
                 choice = np.argmax(Q)  # choice -> left = 0, right = 1
             elif self.params.choice_type == "beta":
                 choice = 1 / (1 - np.exp(self.params.beta * (Q[1] - Q[0])))
 
-
-            # the random number independent of stimulus meant to represent the random time investment necessary to get a reward
-            # investment = get_investment()
-
-            # # todo add investment as a function of statistcal confidence with several parameters
-            # # source Hangya et al. 2016 - A mathematical framework for statistical decision confidence
-            # confidence = np.abs(percept)
-
+            # calculate reward
             # stimulus < 0 and choice = 0 -> reward = 1
             # stimulus > 0 and choice = 1 -> reward = 0
             if [-1, 1][choice] != np.sign(stimulus): # incorrect choice
                 reward = 0
-            #if function(confidence) < investment: # investment bigger than internal confidence calculation
-            #   reward = 0
             else:
-                #reward is reward magnitude * 1 or 0 depending on reward probability
-                # in case of HALIP model probability should be uniformly 0.95%
-                reward = self.params.reward_magnitude[i,choice]*np.random.binomial(1,self.params.reward_probability[i,choice],1)[0]
+                # reward is reward magnitude * 1 or 0 depending on reward probability
+                reward = self.params.reward_magnitude[i, choice] * \
+                         np.random.binomial(1, self.params.reward_probability[i, choice], 1)[0]
 
+            if self.params.model_confidence:
+                confidence = 0.5 * np.abs(percept) + 0.5
+                if confidence < self.params.delta * np.random.uniform(0.5,1,1)[0]: # investment bigger than confidence -> model "waited out the time investment"
+                    reward = 0
+                self.confidence[i] = confidence
 
-            prediction_error = reward - Q[choice]
             # update the value by adding the product of learning rule alpha and reward prediction error
+            prediction_error = reward - Q[choice]
             value[choice] += self.params.alpha * prediction_error
 
             # add your results to your Results object
@@ -257,26 +253,10 @@ class Model():
             self.prediction_error[i] = prediction_error
             self.values[i] = value
 
-        if self.params.verbose:
-            print(f"finished computing model with {self.params.time_steps} time steps")
-
-        self.bin_stimuli()
-
-
-    def bin_stimuli(self):
-        #todo fix this
-        if self.params.stimulus_type in ["equi"]:
-            #bin the equidistributed variables into num-1 bins
-            #with the value assigned corresponding to the max of the bins
-            linspace = np.linspace(-1,1,num = 10).round(3)
-            self.stimuli = linspace[np.digitize(self.stimuli, linspace)]
-            # im not actually this works, honestly just use params.stimulus_type = "linspace"
-
-
     def plot(self,
              variables=['choices', 'values_left'],
              start = 0,
-             stop = 10000,
+             stop = 2000,
              window_size = 10,
              block_colors = None,
              ):
@@ -304,7 +284,7 @@ class Model():
             g = sns.lineplot(data=self.values[:, 1],
                              alpha=0.6, color="blue", label="Values right")
         if 'rewards' in variables:
-            g = sns.lineplot(data=sc.moving_avg_smooth(self.rewards_smooth, window_size),
+            g = sns.lineplot(data=sc.moving_avg_smooth(self.rewards, window_size),
                              alpha=0.6, color="green", label="Rewards (0 = no reward, 1 = reward)")
 
         # if any type of bias block was used during the experiment
@@ -379,31 +359,12 @@ class Model():
         plt.xlabel('Stimulus')
         plt.ylabel('Reward Prediction Error')
 
-    # def plot_previous_rewarded(self):
-    #     psychometric = pd.DataFrame(index=["current","previous"],
-    #                                 columns=[i for i in np.unique(self.stimuli)])
-    #
-    #     for stimulus in np.unique(self.stimuli):
-    #         psychometric.loc["current", stimulus] = np.mean(self.choices[self.stimuli == stimulus])
-    #
-    #     previous_reward_index = pd.DataFrame(columns = np.arange(len(self.rewards)),
-    #                                          data = np.arange(len(self.rewards)))
-    #     previous_reward_index[self.rewards == 0] = np.nan
-    #     previous_reward_index = previous_reward_index.ffill().values.T.astype(int)[0]
-    #     previous_reward_index = np.concatenate([[0], previous_reward_index[:-1]])
-    #     # wrong thing to calculate fuck
-    #     # yea so this doesnt work
-
     def get_psychometric(self):
         """
         calculates the psychometrics of the model -> see plot_psychometric() description
 
         explained in detail in figure 1 of Lak et al 2019
         """
-
-        #plot psychometric curve -> bins for stimulus, corresponding correct choice percentage
-        self.bin_stimuli()
-
         psychometric = pd.DataFrame(index=["current"]+list(np.unique(self.stimuli)),
                                     columns = np.unique(self.stimuli))
 
@@ -646,35 +607,40 @@ class Model():
         plt.xlabel('Stimulus')
         plt.ylabel('Average Reward Prediction Error')
 
-def plot_params(alphas = [0.2,0.5,0.7],
-                sigmas = [0.2,0.5,0.7],
+#todo plot average reward based on confidence
+
+
+def plot_params(params_a = [0.2,0.5,0.7],
+                params_b = [0.2,0.5,0.7],
                 n = 50000,
-                alpha_sigma = None
+                params_ab = None
                 ):
 
-    if alpha_sigma is None:
-        alpha_sigma = pd.DataFrame(index = alphas,columns=sigmas)
+    if params_ab is None:
+        params_ab = pd.DataFrame(index = params_a,columns=params_b)
 
-        for alpha in alphas:
-            for sigma in sigmas:
-                model = Model(Params(alpha=alpha, sigma=sigma,time_steps=n,verbose=True))
+        for param_a in params_a:
+            for param_b in params_b:
+                #change the parameters in this line to make sure that your parameters are the corect ones in th
+                model = Model(Params(alpha=param_a, delta=param_b,time_steps=n))
                 model.run_model()
-                _,matrix,_ = model.get_psychometric()
-                alpha_sigma.loc[alpha,sigma] = matrix.values
+                #change what exactly you want to plot here
+                _,matrix,function = model.get_psychometric()
+                params_ab.loc[param_a,param_b] = matrix.values
                 ticks = matrix.index
 
-    fig, axes = plt.subplots(nrows=len(alphas),
-                             ncols=len(sigmas),
+    fig, axes = plt.subplots(nrows=len(params_a),
+                             ncols=len(params_b),
                              figsize=(10, 10))
 
-    max_abs = np.max(np.abs(np.concatenate(alpha_sigma.values.flatten())))
+    max_abs = np.max(np.abs(np.concatenate(params_ab.values.flatten())))
 
     for (i, j), ax in np.ndenumerate(axes):
-        im = ax.imshow(alpha_sigma.iloc[i,j].astype(np.float64).T,
+        im = ax.imshow(params_ab.iloc[i,j].astype(np.float64).T,
                        cmap='RdBu', norm = matplotlib.colors.Normalize(vmin=-max_abs, vmax=max_abs),
                        interpolation='nearest', aspect='auto')
 
-        ax.set_title(f'(alpha = {alpha_sigma.index[i]}, sigma = {alpha_sigma.columns[j]})')
+        ax.set_title(f'(alpha = {params_ab.index[i]}, sigma = {params_ab.columns[j]})')
         ax.set_xlabel("Current Stimulus")
         ax.set_ylabel("Previous Stimulus")
         ax.set_xticks(np.arange(len(ticks)))
@@ -691,10 +657,10 @@ def plot_params(alphas = [0.2,0.5,0.7],
     fig.colorbar(im, ax=axes.ravel().tolist()).set_label("updating %")
     plt.show()
 
-    return alpha_sigma
+    return params_ab
 
 
-# self = Model(Params(time_steps= 1000000))
+# self = Model(Params(time_steps= 500000))
 # self.params.get_blocks([(1,1),(1,0.5),(0.5,1)])
 # self.run_model()
 
