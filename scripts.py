@@ -10,14 +10,26 @@ def moving_avg_smooth(data, window_size=10):
         smooth.append(np.sum(data[i:i + window_size]) / window_size)
     return np.array(smooth)
 
-def log_fun(x, beta): #define a sigmoidal logistic function to model the decision probability
+def log_fun(x, beta, **kwargs): #define a sigmoidal logistic function to model the decision probability
     return(1 / (1 + np.exp(-beta * x)))
 
-def alpha(t, type, constant = 0.4):
+def decay_alpha(t):
     # learning rate:
-    # types: "1/n", "constant"
-    if type == "1/n":
-        if t == 0: return 1
-        else: return 1/t
-    elif type == "constant":
-        return constant
+    # types: "1/n"
+    if t == 0: return 1
+    else: return 1/t
+
+
+def epsilon_greedy(q, epsilon, **kwargs):
+    if np.random.random() > epsilon:
+        action = np.argmax(q)
+    else:
+        action = np.random.choice(len(q))
+    return action
+
+
+def greedy(q, **kwargs):
+    action = np.argmax(q)
+    return action
+
+

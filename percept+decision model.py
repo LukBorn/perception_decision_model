@@ -17,12 +17,18 @@ class Params():
                  alpha = 0.5,
                  sigma = np.sqrt(0.2),
                  time_steps = 100000,
-                 stimulus_type = "linspace",
-                 choice_type = "greedy",
-                 beta = 9.097,
-                 model_confidence= True,
-                 delta = 1,
-                 difficulty_cut = 0.6
+                 policy=sc.greedy,
+                 beta=9.097,
+                 epsilon=0.5,
+                 TDRL_init = None,
+                 TDRL_steps = 50,
+                 TDRL_omega = -0.01,
+                 TDRL_policy=sc.epsilon_greedy,
+                 TDRL_epsilon = 0.1,
+                 TDRL_beta = None,
+                 TDRL_alpha = 0.1,
+                 TDRL_gamma = 1,
+                 wait_time = 2,
                  ):
 
         np.random.seed = seed
@@ -39,35 +45,51 @@ class Params():
     # time steps -> how many trials a model does
         self.time_steps = time_steps
 
-    # type of stimulus: has to be between -1 and 1
-    # 'linspace': 10 equally spaced values
-    # 'equi': equidistributed --> not fully implemented
-        self.stimulus_type = stimulus_type
-
-    # type of choice: how decision is made
-    # 'greedy': chooses the maximal of the two Q values to decide the choice
-    # 'beta': decides based on delta Q and beta
-        self.choice_type = choice_type
-
-    # beta -> standard deviation of
-        # actually im not fully sure i understand this, i think its like epsilon of epsilon greedy k-armed bandit
+    # choose_action: function for choosing action based given array q
+        self.policy = policy
+    # in case of sc.greedy its just argmax
+    # epsilon: kwarg for choose_action = sc.epsilon_greedy
+        self.epsilon = epsilon
+    # beta: kwarg for choose_action = sc.log_fun -> stolen from lilys code so im not sure what the math behind that is
         self.beta = beta
 
-    # model_confidence -> models confidence if True
-        self.model_confidence = model_confidence
 
-    # delta -> factor that the investment sample is multiplied with
-        self.delta = delta
 
-    # the cut for psychometric evaluation between an easy and a hard difficulty stimulus
-        self.difficulty_cut = difficulty_cut
+    # discrete confidence states that are modeled (confidence needs to discrete)
+        self.confidences = np.linspace(0.5, 1, 10).round(3)
+
+    # alpha_confidence -> learning rate for the confidence updating
+        self.TDRL_alpha = TDRL_alpha
+
+    # TDRL_steps -> the maximum amount of time steps the TDRL model for determining time investment can take
+        self.TDRL_steps = TDRL_steps
+
+    # TDRL_init -> initial values for the value matrix in TDRL
+    # should be either an array of shape [value_stay, value_leave]
+    # or 2d array in the correct shape of previously learned [value_stay, value_leave]
+        self.TDRL_init =TDRL_init
+    # omega -> punishment factor that the time investment is multiplied by
+        self.TDRL_omega = TDRL_omega
+
+    # TDRL_policy: function for choosing action based given array q
+        self.TDRL_policy = TDRL_policy
+    # in case of sc.greedy its just argmax
+    # epsilon: kwarg for choose_action = sc.epsilon_greedy
+        self.TDRL_epsilon = TDRL_epsilon
+    # beta: kwarg for choose_action = sc.log_fun -> stolen from lilys code so im not sure what the math behind that is
+        self.TDRL_beta = TDRL_beta
+
+    #TDRL_gamma: discount factor for the max(next q) of the TDRL
+        self.TDRL_gamma = TDRL_gamma
+
+    # wait_time -> time that agent waits between trials
+        self.wait_time = wait_time
+
 
     # reward magnitude: array with [reward_magnitude_left, reward_magnitude_right] at each time step i
         self.reward_magnitude = np.ones((time_steps, 2))
-
     # reward probability: array with [reward_probability_left, reward_probability_right] at each time step i
         self.reward_probability = np.ones((time_steps, 2))
-
     # blocks -> index of magnitude/probability structure
         self.blocks = np.empty(time_steps).astype(int)
 
@@ -90,9 +112,11 @@ class Params():
         :param magnitude_structure: list of tuples of 2 reward magnitudes
             can also be an array of shape (number_of_blocks, 2)
             eg: [(m_left1,m_right1),(m_left2,m_right2),...]
+
         :param probability_structure: list of tuples of 2 reward magnitudes
             can also be an array of shape (number_of_blocks, 2)
             eg: [(m_left1,m_right1),(m_left2,m_right2),...]
+            values for probability between 0,1
         :param block_size: size of each block
         :return:
         """
@@ -170,38 +194,24 @@ class Model():
         self.params = params
 
         self.stimuli = np.empty(params.time_steps,dtype=np.float64)
-        self.percept = np.empty(params.time_steps,dtype=np.float64)
+        self.percepts = np.empty(params.time_steps,dtype=np.float64)
         self.choices = np.empty(params.time_steps)
         self.rewards = np.empty(params.time_steps)
         self.prediction_error = np.empty(params.time_steps)
         self.values = np.empty((params.time_steps,2))
         self.confidence = np.empty(params.time_steps,dtype=np.float64)
 
-        self.rewards_smooth = None
-        self.values_left_smooth = None
-        self.values_right_smooth = None
-        self.choices_smooth = None
-
         self.psychometric = None
         self.updating_matrix = None
         self.updating_function = None
 
     def run_model(self,
-                  params=None):
-        """
-        runs the model, saving all results into itself
+                  params = None):
 
-        get stimulus
-        add perceptual uncertainty
-        calculate p_left and p_right
-        multiply p_left with value_left, same for right
-        choose left or right based on values
-        recieve reward or not
-        update values based on reward prediction error
-        """
-        #generate params class if none is specified
         if params is not None:
             self.params = params
+
+        self.model_type = "standard"
 
         # set initial values: [value_left, value_right]
         value = np.full(2, self.params.init_values, dtype=np.float64)
@@ -211,39 +221,30 @@ class Model():
             # generate stimulus: random sample from one of 10 equally spaced stimuli between -1 and 1
             stimulus = np.random.choice(np.linspace(-1, 1, 10), 1).round(3)[0]
 
-            # generate internal estimate of the stimulus
-            percept = np.random.normal(stimulus, self.params.sigma, 1)[0]
-            self.percept[i] = percept
+            # internal estimate of the stimulus is normally distributed
+            # with constant variance around true stimulus contrast sigma
+            percept = np.random.normal(stimulus, self.params.sigma, 1)
 
-            # calculate value-adjusted percept probability Q
             p_percept = 0.5 * (1 + scipy.special.erf(percept / (np.sqrt(2) * self.params.sigma)))
             p_percept = np.array([1 - p_percept, p_percept]).T[0]
+
             Q = p_percept * value
 
-            # calculate choice based on Q
-            if self.params.choice_type == "greedy":
-                choice = np.argmax(Q)  # choice -> left = 0, right = 1
-            elif self.params.choice_type == "beta":
-                choice = 1 / (1 - np.exp(self.params.beta * (Q[1] - Q[0])))
+            # calculate choice based on Q -> left = 0, right = 1
+            # greedy choice
+            choice = self.params.policy(Q, epsilon = self.params.epsilon, beta=self.params.beta)
 
-            # calculate reward
             # stimulus < 0 and choice = 0 -> reward = 1
             # stimulus > 0 and choice = 1 -> reward = 0
-            if [-1, 1][choice] != np.sign(stimulus): # incorrect choice
+            if [-1, 1][choice] != np.sign(stimulus):  # incorrect choice
                 reward = 0
             else:
                 # reward is reward magnitude * 1 or 0 depending on reward probability
                 reward = self.params.reward_magnitude[i, choice] * \
                          np.random.binomial(1, self.params.reward_probability[i, choice], 1)[0]
 
-            if self.params.model_confidence:
-                confidence = 0.5 * np.abs(percept) + 0.5
-                if confidence < self.params.delta * np.random.uniform(0.5,1,1)[0]: # investment bigger than confidence -> model "waited out the time investment"
-                    reward = 0
-                self.confidence[i] = confidence
-
-            # update the value by adding the product of learning rule alpha and reward prediction error
             prediction_error = reward - Q[choice]
+            # update the value by adding the product of learning rule alpha and reward prediction error
             value[choice] += self.params.alpha * prediction_error
 
             # add your results to your Results object
@@ -253,8 +254,201 @@ class Model():
             self.prediction_error[i] = prediction_error
             self.values[i] = value
 
+
+    def run_investment_model_old(self,
+                             params = None):
+        """
+        runs the model, saving all results into itself
+        simulate time investment as a "function" of confidence
+        just weights for each confidence level that get adjusted after every decision
+
+        get stimulus
+        add perceptual uncertainty
+        calculate p_left and p_right
+        multiply p_left with value_left, same for right
+        choose left or right based on values
+        calculate time investment based on decision confidence based on percept
+        generate reward_time
+        recieve reward based on choice and time investment
+        update values based on reward prediction error
+        """
+        #generate params class if none is specified
+        if params is not None:
+            self.params = params
+
+        self.model_type = "time_investment"
+
+        # set initial values: [value_left, value_right]
+        value = np.full(2, self.params.init_values, dtype=np.float64)
+
+        # set the investment values for each confidence
+        investment_function = self.params.TDRL_init
+
+        self.time = np.zeros(self.params.time_steps)
+
+        print("Model Running:")
+        for i in tqdm(range(self.params.time_steps)):
+            # generate stimulus: random sample from one of 10 equally spaced stimuli between -1 and 1
+            stimulus = np.random.choice(np.linspace(-1, 1, 10), 1).round(3)[0]
+
+            # generate internal estimate of the stimulus
+            percept = np.random.normal(stimulus, self.params.sigma, 1)[0]
+
+            # calculate decision confidence
+            confidence = 0.5 * np.abs(percept) + 0.5
+            # discretize by setting it to the closest one in our confidence statespace
+            confidence = self.params.confidences[np.abs(self.params.confidences - confidence).argmin()]
+
+            #calculate time investment
+            time_investment = investment_function[np.nonzero(self.params.confidences == 1)[0][0]]
+
+            # calculate value-adjusted percept probability Q
+            p_percept = 0.5 * (1 + scipy.special.erf(percept / (np.sqrt(2) * self.params.sigma)))
+            p_percept = np.array([1 - p_percept, p_percept]).T[0]
+            Q = p_percept * value
+
+            # calculate choice based on Q -> left = 0, right = 1
+            choice = self.params.policy(Q, epsilon = self.params.epsilon, beta=self.params.beta)
+
+            # generate reward time
+            reward_time = np.random.randint(5,10)/10
+
+            # calculate reward
+            if [-1, 1][choice] != np.sign(stimulus): # incorrect choice
+                reward = self.params.omega * time_investment
+            elif time_investment < reward_time: # early withdrawal
+                reward = self.params.omega * time_investment
+            else:
+                reward = self.params.reward_magnitude[i, choice] * \
+                         np.random.binomial(1, self.params.reward_probability[i, choice], 1)[0] + self.params.omega * time_investment
+
+            # update the value by adding the product of learning rule alpha and reward prediction error
+            prediction_error = reward - Q[choice]
+            value[choice] += self.params.alpha * prediction_error
+
+            # calculate the time_point of the trial
+            self.time[i] = self.time[i - 1] + time_investment + self.params.wait_time
+
+            # update confidence value
+            # todo its this learning rule thats fucked up and idk how to fix it
+            time_investment += self.params.TDRL_alpha * prediction_error
+            investment_function[np.nonzero(self.params.confidences == 1)[0][0]] = time_investment
+
+
+            self.stimuli[i] = stimulus
+            self.percepts[i] = percept
+            self.confidence[i] = confidence
+            self.choices[i] = choice
+            self.rewards[i] = reward
+            self.prediction_error[i] = prediction_error
+            self.values[i] = value
+
+
+    def run_investment_model(self,
+                             params = None):
+        """
+        runs the model, saving all results into itself
+        model all time points and confidence values as one big state space
+
+
+        get stimulus
+        add perceptual uncertainty
+        calculate p_left and p_right
+        multiply p_left with value_left, same for right
+        choose left or right based on values
+        generate reward_time
+        Temporal Difference Learning of time investment:
+            run through your state space with stay/leave options
+        recieve reward based on choice and time investment
+        update values based on reward prediction error
+        """
+
+        # generate params class if none is specified
+        if params is not None:
+            self.params = params
+
+        self.model_type = "time_investment_TDRL"
+
+        # set initial values: [value_left, value_right]
+        value = np.full(2, self.params.init_values, dtype=np.float64)
+
+        TDRL_values = pd.DataFrame(index = self.params.confidences,
+                                   columns = np.arange(self.params.TDRL_steps),
+                                   data = self.params.TDRL_init)
+
+        self.time = np.zeros(self.params.time_steps)
+
+        print("Model Running:")
+        for i in tqdm(range(self.params.time_steps)):
+            # generate stimulus: random sample from one of 10 equally spaced stimuli between -1 and 1
+            stimulus = np.random.choice(np.linspace(-1, 1, 10), 1).round(3)[0]
+
+            # generate internal estimate of the stimulus
+            percept = np.random.normal(stimulus, self.params.sigma, 1)[0]
+
+            # calculate decision confidence
+            confidence = 0.5 * np.abs(percept) + 0.5
+            # discretize by setting it to the closest one in our confidence statespace
+            confidence = self.params.confidences[np.abs(self.params.confidences - confidence).argmin()]
+
+            # calculate value-adjusted percept probability Q
+            p_percept = 0.5 * (1 + scipy.special.erf(percept / (np.sqrt(2) * self.params.sigma)))
+            p_percept = np.array([1 - p_percept, p_percept]).T[0]
+            Q = p_percept * value
+
+            # calculate choice based on Q -> left = 0, right = 1
+            choice = self.params.policy(Q, epsilon = self.params.epsilon, beta=self.params.beta)
+
+            # generate reward_time
+            if [-1, 1][choice] != np.sign(stimulus):  # incorrect choice
+                reward_time = self.params.TDRL_steps+10
+            else:
+                reward_time = np.random.randint(0, self.params.TDRL_steps)
+                #todo add a way for the model to learn by giving the reward progressively later
+
+            for time_step in range(1,self.params.TDRL_steps+1):
+                # states tuples (confidence, time_step) that can be used to index into
+                # investment_values is a dataframe with confidence as index and n as columns,
+                # each value is a 1d array of shape [value_stay, value_leave]
+                # choose the action
+                q = TDRL_values.loc[confidence, time_step]
+                
+                action = self.params.TDRL_policy(q)
+                
+                # calculate the reward for this action, and the next step
+                if action != 0: #leave 
+                    reward = self.params.omega * (time_step)
+                    next_q = 0
+                elif time_step == self.params.TDRL_steps+1: #trial time limit has been reached
+                    reward = self.params.omega * (time_step)
+                    next_q = 0
+                elif time_step == reward_time: # reward time babyyyy
+                    reward = 1 + self.params.omega * (time_step)  # todo integrate the reward magnitude in a sensible way
+                    next_q = 0
+                else: # stay
+                    reward = self.params.omega * (time_step)
+                    next_q = TDRL_values.loc[confidence, time_step + 1]
+                
+                TD_error = reward + self.params.gamma * next_q.max() - q
+                TDRL_values.loc[confidence, time_step] = q + self.params.TDRL_alpha * TD_error
+                if next_q == 0:
+                    break
+
+            # update the value by adding the product of learning rule alpha and reward prediction error
+            prediction_error = reward - Q[choice]
+            value[choice] += self.params.alpha * prediction_error
+
+
+            self.stimuli[i] = stimulus
+            self.percepts[i] = percept
+            self.confidence[i] = confidence
+            self.choices[i] = choice
+            self.rewards[i] = reward
+            self.prediction_error[i] = prediction_error
+            self.values[i] = value
+
     def plot(self,
-             variables=['choices', 'values_left'],
+             variables=None,
              start = 0,
              stop = 2000,
              window_size = 10,
@@ -272,6 +466,8 @@ class Model():
         :param window_size:
             window size for smoothing function
         """
+        if variables is None:
+            variables = ['choices', 'values_left']
         sns.set_palette("Set2")
         # define the lines for each variable in variables
         if 'choices' in variables:
@@ -359,12 +555,15 @@ class Model():
         plt.xlabel('Stimulus')
         plt.ylabel('Reward Prediction Error')
 
-    def get_psychometric(self):
+    def get_psychometric(self,
+                         difficulty_cut = 0.6):
         """
         calculates the psychometrics of the model -> see plot_psychometric() description
 
         explained in detail in figure 1 of Lak et al 2019
         """
+        self.params.difficulty_cut = 0.6
+
         psychometric = pd.DataFrame(index=["current"]+list(np.unique(self.stimuli)),
                                     columns = np.unique(self.stimuli))
 
@@ -412,16 +611,17 @@ class Model():
         updating function is the updating percentage for each previous stimulus,
             seperated between hard and easy choices based on current stimulus difficulty
         """
+        self.get_psychometric()
 
-        if self.updating_matrix is None:
-            self.get_psychometric()
+        fig, axes = plt.subplots(nrows=1, ncols=3)
 
         # plot current psychometric and random previous psychometric
-        fig, axes = plt.subplots(nrows=1, ncols=3)
+        # get random psychometric to plot
         if previous_psychometric is None:
             # make sure you get a hard choice so the difference is obvious in the plot
             hard_choices = np.unique(self.stimuli)[np.abs(np.unique(np.unique(self.stimuli))) < self.params.difficulty_cut]
             previous_psychometric = np.random.choice(hard_choices)
+        # plot psychometric
         data = self.psychometric.loc[["current", previous_psychometric]].T
         data.index.astype(str)
         sns.lineplot(data=data, dashes=False, markers=True, palette="Set1", ax=axes[0])
@@ -494,7 +694,7 @@ class Model():
         if metric == "correct":
             # 1 -> previous choice matches stimulus -> correct, 0 -> incorrect
             previous_reward = (np.sign(np.concatenate(([1],self.stimuli[:-1]))) == np.concatenate(([0], self.choices[:-1]))).astype(int)
-            # todo get this to work
+            # todo get this to work so far only reward works
         elif metric == "reward":
             # 1 -> previous choice was rewarded, 0 -> previous choice was not rewarded
             previous_reward = np.sign(np.concatenate(([0], self.rewards[:-1])))
@@ -607,7 +807,7 @@ class Model():
         plt.xlabel('Stimulus')
         plt.ylabel('Average Reward Prediction Error')
 
-#todo plot average reward based on confidence
+
 
 
 def plot_params(params_a = [0.2,0.5,0.7],
@@ -636,6 +836,7 @@ def plot_params(params_a = [0.2,0.5,0.7],
     max_abs = np.max(np.abs(np.concatenate(params_ab.values.flatten())))
 
     for (i, j), ax in np.ndenumerate(axes):
+        # todo add other things you can plot here
         im = ax.imshow(params_ab.iloc[i,j].astype(np.float64).T,
                        cmap='RdBu', norm = matplotlib.colors.Normalize(vmin=-max_abs, vmax=max_abs),
                        interpolation='nearest', aspect='auto')
@@ -660,7 +861,9 @@ def plot_params(params_a = [0.2,0.5,0.7],
     return params_ab
 
 
-# self = Model(Params(time_steps= 500000))
+self = Model()
+self.run_investment_model()
+self.plot_psychometric()
 # self.params.get_blocks([(1,1),(1,0.5),(0.5,1)])
 # self.run_model()
 
