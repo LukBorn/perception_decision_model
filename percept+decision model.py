@@ -20,9 +20,10 @@ class Params():
                  policy=sc.greedy,
                  beta=9.097,
                  epsilon=0.5,
-                 TDRL_init = None,
-                 TDRL_steps = 50,
-                 TDRL_omega = -0.01,
+                 TDRL_init = 1,
+                 TDRL_steps = 20,
+                 TDRL_bins = 0.5,
+                 TDRL_omega = -0.008,
                  TDRL_policy=sc.epsilon_greedy,
                  TDRL_epsilon = 0.1,
                  TDRL_beta = None,
@@ -54,7 +55,6 @@ class Params():
         self.beta = beta
 
 
-
     # discrete confidence states that are modeled (confidence needs to discrete)
         self.confidences = np.linspace(0.5, 1, 10).round(3)
 
@@ -64,12 +64,16 @@ class Params():
     # TDRL_steps -> the maximum amount of time steps the TDRL model for determining time investment can take
         self.TDRL_steps = TDRL_steps
 
+    # TDRL_bins -> size of the time bin (in seconds)
+        self.TDRL_bins = TDRL_bins
+
+    # omega -> punishment factor that the time investment is multiplied by
+        self.TDRL_omega = TDRL_omega
+
     # TDRL_init -> initial values for the value matrix in TDRL
     # should be either an array of shape [value_stay, value_leave]
     # or 2d array in the correct shape of previously learned [value_stay, value_leave]
         self.TDRL_init =TDRL_init
-    # omega -> punishment factor that the time investment is multiplied by
-        self.TDRL_omega = TDRL_omega
 
     # TDRL_policy: function for choosing action based given array q
         self.TDRL_policy = TDRL_policy
@@ -91,7 +95,7 @@ class Params():
     # reward probability: array with [reward_probability_left, reward_probability_right] at each time step i
         self.reward_probability = np.ones((time_steps, 2))
     # blocks -> index of magnitude/probability structure
-        self.blocks = np.empty(time_steps).astype(int)
+        self.blocks = np.ones(time_steps).astype(int)
 
         self.block_type = []
         self.magnitude_structure = None
@@ -125,7 +129,6 @@ class Params():
             if magnitude_structure.shape != probability_structure.shape:
                 raise ValueError("magnitude and reward structure must be same shape")
 
-
         if probability_structure is not None:
             # make sure it is an array
             probability_structure = np.array(probability_structure)
@@ -137,7 +140,6 @@ class Params():
             total_blocks_length = probability_structure.shape[0] * block_size
             if total_blocks_length > self.time_steps:
                 raise Warning("the time steps necessary for the specified block structure/size are more than the total time steps of the model. block structure will be truncated. Please specify a smaller block size or more total time steps")
-
 
         if magnitude_structure is not None:
             magnitude_structure = np.array(magnitude_structure)
@@ -201,6 +203,10 @@ class Model():
         self.values = np.empty((params.time_steps,2))
         self.confidence = np.empty(params.time_steps,dtype=np.float64)
 
+        # TDRL_values -> values for each action at each time point and decision confidence
+        self.TDRL_values = None
+        self.time_investment = np.zeros(params.time_steps)
+
         self.psychometric = None
         self.updating_matrix = None
         self.updating_function = None
@@ -254,9 +260,8 @@ class Model():
             self.prediction_error[i] = prediction_error
             self.values[i] = value
 
-
-    def run_investment_model_old(self,
-                             params = None):
+    def run_investment_model_old_old(self,
+                                     params = None):
         """
         runs the model, saving all results into itself
         simulate time investment as a "function" of confidence
@@ -276,7 +281,7 @@ class Model():
         if params is not None:
             self.params = params
 
-        self.model_type = "time_investment"
+        self.model_type = "time_investment_old_old"
 
         # set initial values: [value_left, value_right]
         value = np.full(2, self.params.init_values, dtype=np.float64)
@@ -343,13 +348,12 @@ class Model():
             self.prediction_error[i] = prediction_error
             self.values[i] = value
 
-
-    def run_investment_model(self,
-                             params = None):
+    def run_investment_model_old(self,
+                                 params = None):
         """
         runs the model, saving all results into itself
-        model all time points and confidence values as one big state space
-
+        model all time points and confidences as one big state space,
+        with values for the actions stay or leave saved in a multiindex
 
         get stimulus
         add perceptual uncertainty
@@ -359,22 +363,32 @@ class Model():
         generate reward_time
         Temporal Difference Learning of time investment:
             run through your state space with stay/leave options
+            updating values based on expected reward
         recieve reward based on choice and time investment
         update values based on reward prediction error
         """
 
-        # generate params class if none is specified
+        # set params if different ones specified
         if params is not None:
             self.params = params
 
-        self.model_type = "time_investment_TDRL"
+        self.model_type = "time_investment_TDRL_old"
+
+        print(f"Total reward for non-rewarded, non-terminated trial is {self.params.TDRL_steps*self.params.TDRL_omega}")
+
 
         # set initial values: [value_left, value_right]
         value = np.full(2, self.params.init_values, dtype=np.float64)
 
-        TDRL_values = pd.DataFrame(index = self.params.confidences,
-                                   columns = np.arange(self.params.TDRL_steps),
-                                   data = self.params.TDRL_init)
+        if self.TDRL_values is None:
+            TDRL_values = pd.DataFrame(index = self.params.confidences,
+                                       columns = pd.MultiIndex.from_product((np.arange(self.params.TDRL_steps),[0,1]),
+                                                                            names = ["n", "action"]),
+                                       data = self.params.TDRL_init,
+                                       dtype = np.float64
+                                       )
+        else:
+            TDRL_values = self.TDRL_values
 
         self.time = np.zeros(self.params.time_steps)
 
@@ -393,7 +407,7 @@ class Model():
 
             # calculate value-adjusted percept probability Q
             p_percept = 0.5 * (1 + scipy.special.erf(percept / (np.sqrt(2) * self.params.sigma)))
-            p_percept = np.array([1 - p_percept, p_percept]).T[0]
+            p_percept = np.array([p_percept, 1-p_percept]).T
             Q = p_percept * value
 
             # calculate choice based on Q -> left = 0, right = 1
@@ -402,43 +416,49 @@ class Model():
             # generate reward_time
             if [-1, 1][choice] != np.sign(stimulus):  # incorrect choice
                 reward_time = self.params.TDRL_steps+10
+            elif np.random.binomial(1, self.params.reward_probability[i, choice], 1)[0] == 0: #clutch trial
+                reward_time = self.params.TDRL_steps + 10
             else:
-                reward_time = np.random.randint(0, self.params.TDRL_steps)
+                reward_time = sc.trunc_expon()
                 #todo add a way for the model to learn by giving the reward progressively later
+                # either by passing a function in here, or making a seperate function,
+                # but then the parameter for randint would have to be different bc the statespae has to stay the same
 
-            for time_step in range(1,self.params.TDRL_steps+1):
+            for time_step in range(self.params.TDRL_steps):
                 # states tuples (confidence, time_step) that can be used to index into
                 # investment_values is a dataframe with confidence as index and n as columns,
                 # each value is a 1d array of shape [value_stay, value_leave]
+
                 # choose the action
-                q = TDRL_values.loc[confidence, time_step]
-                
-                action = self.params.TDRL_policy(q)
-                
+                action = self.params.TDRL_policy(TDRL_values.loc[confidence, time_step], epsilon = self.params.TDRL_epsilon)
+                q = TDRL_values.loc[confidence, (time_step, action)]
+
                 # calculate the reward for this action, and the next step
-                if action != 0: #leave 
-                    reward = self.params.omega * (time_step)
-                    next_q = 0
-                elif time_step == self.params.TDRL_steps+1: #trial time limit has been reached
-                    reward = self.params.omega * (time_step)
-                    next_q = 0
+                if action == 1: #leave
+                    reward = self.params.TDRL_omega * time_step
+                    max_next_q = 0
+                elif time_step == self.params.TDRL_steps - 1 : #trial time limit has been reached
+                    reward = self.params.TDRL_omega * time_step
+                    max_next_q = 0
                 elif time_step == reward_time: # reward time babyyyy
-                    reward = 1 + self.params.omega * (time_step)  # todo integrate the reward magnitude in a sensible way
-                    next_q = 0
+                    reward =  self.params.TDRL_omega * time_step + self.params.reward_magnitude[i, choice]
+                    max_next_q = 0
                 else: # stay
-                    reward = self.params.omega * (time_step)
-                    next_q = TDRL_values.loc[confidence, time_step + 1]
-                
-                TD_error = reward + self.params.gamma * next_q.max() - q
-                TDRL_values.loc[confidence, time_step] = q + self.params.TDRL_alpha * TD_error
-                if next_q == 0:
+                    reward = self.params.TDRL_omega * time_step
+                    max_next_q = TDRL_values.loc[confidence, time_step + 1].max()
+
+                TD_error = reward + self.params.TDRL_gamma * max_next_q - q
+                TDRL_values.loc[confidence, (time_step, action)] = q + self.params.TDRL_alpha * TD_error
+
+                if max_next_q == 0:
                     break
+
 
             # update the value by adding the product of learning rule alpha and reward prediction error
             prediction_error = reward - Q[choice]
             value[choice] += self.params.alpha * prediction_error
 
-
+            self.time[i] = time_step
             self.stimuli[i] = stimulus
             self.percepts[i] = percept
             self.confidence[i] = confidence
@@ -446,6 +466,110 @@ class Model():
             self.rewards[i] = reward
             self.prediction_error[i] = prediction_error
             self.values[i] = value
+
+        self.TDRL_values = TDRL_values
+
+    def run_investment_model(self,
+                             params = None):
+        """
+        change to old model:
+        only model time -> multiply confidence into the value function deciding stay or leave
+
+        """
+        # set params if different ones specified
+        if params is not None:
+            self.params = params
+
+        self.model_type = "time_investment_TDRL"
+
+        print(f"Total reward for non-rewarded, non-terminated trial is {self.params.TDRL_steps * self.params.TDRL_omega}")
+
+        # set initial values: [value_left, value_right]
+        value = np.full(2, self.params.init_values, dtype=np.float64)
+
+        if self.TDRL_values is None:
+            TDRL_values = pd.DataFrame(index=["stay","leave"],
+                                       columns=np.arange(self.params.TDRL_steps),
+                                       data=self.params.TDRL_init,
+                                       dtype=np.float64
+                                       )
+        else:
+            TDRL_values = self.TDRL_values
+
+        self.time = np.zeros(self.params.time_steps)
+
+        print("Model Running:")
+        for i in tqdm(range(self.params.time_steps)):
+            # generate stimulus: random sample from one of 10 equally spaced stimuli between -1 and 1
+            stimulus = np.random.choice(np.linspace(-1, 1, 10), 1).round(3)[0]
+
+            # generate internal estimate of the stimulus
+            percept = np.random.normal(stimulus, self.params.sigma, 1)[0]
+
+            # calculate decision confidence
+            confidence = 0.5 * np.abs(percept) + 0.5
+            # discretize by setting it to the closest one in our confidences
+            confidence = self.params.confidences[np.abs(self.params.confidences - confidence).argmin()]
+
+            # calculate value-adjusted percept probability Q
+            p_percept = 0.5 * (1 + scipy.special.erf(percept / (np.sqrt(2) * self.params.sigma)))
+            p_percept = np.array([p_percept, 1 - p_percept]).T
+            Q = p_percept * value
+
+            # calculate choice based on Q -> left = 0, right = 1
+            choice = self.params.policy(Q, epsilon=self.params.epsilon, beta=self.params.beta)
+
+            # generate reward_time
+            if [-1, 1][choice] != np.sign(stimulus):  # incorrect choice
+                reward_time = self.params.TDRL_steps + 10
+            elif np.random.binomial(1, self.params.reward_probability[i, choice], 1)[0] == 0:  # clutch trial
+                reward_time = self.params.TDRL_steps + 10
+            else:
+                reward_time = sc.trunc_expon() / self.params.TDRL_bins
+                # todo add a way for the model to learn by giving the reward progressively later
+                # either by passing a function in here, or making a seperate function,
+                # but then the parameter for randint would have to be different bc the statespae has to stay the same
+
+            for time_step in TDRL_values.columns.values:
+                # choose the action
+                action = TDRL_values.index[self.params.TDRL_policy(TDRL_values[time_step],
+                                                                   epsilon=self.params.TDRL_epsilon)]
+                q = TDRL_values.loc[action, time_step] * confidence
+
+                # calculate the reward for this action, and the next step
+                if action == 1:  # leave
+                    reward = self.params.TDRL_omega * time_step
+                    max_next_q = 0
+                elif time_step == self.params.TDRL_steps - 1:  # trial time limit has been reached
+                    reward = self.params.TDRL_omega * time_step
+                    max_next_q = 0
+                elif time_step == reward_time:  # reward time babyyyy
+                    reward = self.params.TDRL_omega * time_step + self.params.reward_magnitude[i, choice]
+                    max_next_q = 0
+                else:  # stay
+                    reward = self.params.TDRL_omega * time_step
+                    max_next_q = TDRL_values[time_step + 1].max() * confidence
+
+                TD_error = reward + self.params.TDRL_gamma * max_next_q - q
+                TDRL_values.loc[action, time_step] = q + self.params.TDRL_alpha * TD_error
+
+                if max_next_q == 0:
+                    break
+
+            # update the value by adding the product of learning rule alpha and reward prediction error
+            prediction_error = reward - Q[choice]
+            value[choice] += self.params.alpha * prediction_error
+
+            self.time[i] = time_step
+            self.stimuli[i] = stimulus
+            self.percepts[i] = percept
+            self.confidence[i] = confidence
+            self.choices[i] = choice
+            self.rewards[i] = reward
+            self.prediction_error[i] = prediction_error
+            self.values[i] = value
+
+        self.TDRL_values = TDRL_values
 
     def plot(self,
              variables=None,
@@ -519,9 +643,17 @@ class Model():
 
         else: plt.title('Basic RL model')
         plt.xlim(start,stop)
-        plt.setp(g, yticks=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
+        #plt.setp(g, yticks=[0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0])
         plt.legend(fontsize=8, loc='lower left')
         plt.show()
+
+    def plot_simple_psychometric(self):
+        self.get_psychometric()
+        data = self.psychometric.loc["current"].T
+        data.index.astype(str)
+        sns.lineplot(data=data, dashes=False, markers=True, palette="Set1")
+        plt.xlabel("Current/Previous Stimulus")
+        plt.ylabel("Average Choice")
 
     def plot_previous_choice(self):
         """
@@ -562,7 +694,7 @@ class Model():
 
         explained in detail in figure 1 of Lak et al 2019
         """
-        self.params.difficulty_cut = 0.6
+        self.params.difficulty_cut = difficulty_cut
 
         psychometric = pd.DataFrame(index=["current"]+list(np.unique(self.stimuli)),
                                     columns = np.unique(self.stimuli))
@@ -591,10 +723,8 @@ class Model():
 
         return psychometric, updating_matrix, updating_function
 
-
     def plot_psychometric(self,
-                          previous_psychometric = None, #previous psychometric to plot alongside current
-                          ):
+                          previous_psychometric = None):
         """
         plots the psychometrics of the model based on Lak et al 2019:
         Reinforcement biases subsequent perceptual decisions when confidence is low, a widespread behavioral phenomenon
@@ -664,6 +794,53 @@ class Model():
         plt.ylabel("Average Choice")
         plt.legend(fontsize=8, loc='lower right')
         plt.show()
+
+
+    def plot_block_transition(self,
+                              variables = None,
+                              before = 50,
+                              after = 50):
+        if variables is None:
+            variables = ["values_left", "values_right"]
+        plot = []
+        if 'values_left' in variables:
+            plot.append(self.values[:,0])
+        if "values_right" in variables:
+            plot.append(self.values[:,1])
+        if "choice" in variables:
+            plot.append(self.choices[:])
+        if "reward" in variables:
+            plot.append(self.rewards)
+
+        colors = ["black", "purple","blue","red", "gainsboro", "orange"]
+
+        all_transitions = np.arange(start=0,stop=self.params.time_steps,step= self.params.block_size)
+        n_transition_types = self.params.magnitude_structure.shape[0]
+
+        fig, axes = plt.subplots(nrows = n_transition_types, ncols=1)
+
+        for type in range(n_transition_types):
+            transitions = all_transitions[type+1::n_transition_types]
+            for j in range(len(plot)):
+                data = np.empty(before+after)
+                index = np.arange(before +after)-before+1
+                variable = plot[j]
+                for i in range(before+after):
+                    data[i] = np.mean(variable[transitions+index[i]])
+
+                sns.lineplot(data=data, alpha=0.6, color=colors[j],
+                             ax=axes[type], label=variables[j])
+
+            block_before, block_after= self.params.reward_magnitude[transitions[0]-1], self.params.reward_magnitude[transitions[0]]
+
+            axes[type].axvspan(0, before-1, alpha = 0.3, color = colors[-1],
+                               label = f"Reward Magnitude left: {block_before[0]} \n Reward Magnitude right: {block_before[1]}")
+            axes[type].axvspan(before-1, before+after, alpha = 0.3, color = colors[-2],
+                               label = f"Reward Magnitude left: {block_after[0]} \n Reward Magnitude right: {block_after[1]}")
+
+
+
+
 
 
     def plot_previous_bias(self,
@@ -808,6 +985,59 @@ class Model():
         plt.ylabel('Average Reward Prediction Error')
 
 
+    def plot_TDRL_values(self):
+        fig, axes = plt.subplots(nrows=3, ncols=1)
+
+        # plot the stay values
+        im = axes[0].imshow(self.TDRL_values.loc[:,(slice(None),0)])
+        axes[0].set_title("stay values")
+        axes[0].set_yticks(np.arange(len(self.params.confidences)), self.params.confidences)
+        axes[0].set_ylabel("confidence")
+        fig.colorbar(im)
+
+        # plot the leave values
+        im = axes[1].imshow(self.TDRL_values.loc[:, (slice(None), 1)])
+        axes[1].set_title("leave values")
+        axes[1].set_yticks(np.arange(len(self.params.confidences)), self.params.confidences)
+        axes[1].set_ylabel("confidence")
+        fig.colorbar(im)
+
+        # plot the difference between stay and leave values
+        im = axes[2].imshow(self.TDRL_values.loc[:,(slice(None),0)].values - self.TDRL_values.loc[:,(slice(None),1)].values)
+        axes[2].set_title("difference")
+        axes[2].set_xlabel("time steps")
+        axes[2].set_yticks(np.arange(len(self.params.confidences)), self.params.confidences)
+        axes[2].set_ylabel("confidence")
+        fig.colorbar(im)
+
+
+def plot_investment(self, x = "confidence"):
+    # todo plot average time investment for each confidence level/stimulus
+    # calculate the average time investment for each confidence level
+    if x =="confidence":
+        data = pd.DataFrame(index = self.params.confidences, columns= ["mean", "sd"])
+        for confidence in self.params.confidences:
+            data.loc[confidence,"mean"] = np.mean(self.time[self.confidence == confidence])
+            data.loc[confidence,"sd"] = np.std(self.time[self.confidence == confidence])
+    elif x == "stimulus":
+        data = pd.DataFrame(index=np.unique(self.stimuli), columns=["mean", "sd"])
+        for stimulus in np.unique(self.stimuli):
+            data.loc[stimulus, "mean"] = np.mean(self.time[self.confidence == stimulus])
+            data.loc[stimulus, "sd"] = np.std(self.time[self.confidence == stimulus])
+            # todo this doesnt work for some reason
+    else: print("you suck lol")
+    sns.lineplot(data=data["mean"], marker='o')
+    # Add error bars
+    plt.errorbar(data.index, data['mean'], yerr=data['sd'], fmt='none', capsize=5)
+    plt.xlabel(x)
+    plt.ylabel('Average time investement')
+
+def plot_reward_real_time(self):
+    real_time = np.zeros(self.params.time_steps)
+
+    ...
+
+# todo plot reward per time
 
 
 def plot_params(params_a = [0.2,0.5,0.7],
@@ -861,10 +1091,22 @@ def plot_params(params_a = [0.2,0.5,0.7],
     return params_ab
 
 
-self = Model()
-self.run_investment_model()
-self.plot_psychometric()
-# self.params.get_blocks([(1,1),(1,0.5),(0.5,1)])
-# self.run_model()
+# self = Model(Params(time_steps=250000))
+# self.run_investment_model()
+# self.plot_psychometric()
 
+"""
+Hi Lilly, ich bin mir nicht sicher was deine konkreten pläne mit dem code sind, 
+vielleicht hier in kurz ein protokoll was ungefähr dem letzten code entspricht den ich von dir bekommen hab
+"""
+self = Model(Params(time_steps=100000))
+self.params.get_blocks(magnitude_structure = [(1,1),(1,0.5),(0.5,1)], block_size = 400)
+self.run_model()
+self.plot_block_transition()
+# # kurzer überblick über wie gut das modell lernt
+# self.plot_psychometric()
+# # plot the values
+# self.plot(variables = ["values_left", "values_right"], start = 1200, stop = 4000, window_size=3)
+# # plot some pyschometrics for the bias blocks
+# self.plot_previous_bias()
 

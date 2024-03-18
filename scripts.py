@@ -32,4 +32,12 @@ def greedy(q, **kwargs):
     action = np.argmax(q)
     return action
 
+def trunc_expon(lower_limit=0.5,
+                upper_limit=8,
+                lamda=1.5):
+    sample = lower_limit + np.random.exponential(lamda,1)
+    while sample >= upper_limit:
+        sample = lower_limit + np.random.exponential(lamda,1)
+    return sample[0]
+
 
