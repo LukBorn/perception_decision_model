@@ -151,8 +151,7 @@ class Params():
             if total_blocks_length > self.time_steps:
                 raise Warning("the time steps necessary for the specified block structure/size are more than the total time steps of the model. block structure will be truncated. Please specify a smaller block size or more total time steps")
 
-        print("Calculating block structure")
-        for i in tqdm(range(self.time_steps)):
+        for i in range(self.time_steps):
             self.blocks[i] = int((i%total_blocks_length)/block_size)
             if "magnitude" in self.block_type:
                 self.reward_magnitude[i] = magnitude_structure[self.blocks[i]]
@@ -212,12 +211,15 @@ class Model():
         self.updating_function = None
 
     def run_model(self,
-                  params = None):
+                  params = None,
+                  reset_after_blocks = False):
 
         if params is not None:
             self.params = params
 
         self.model_type = "standard"
+        if reset_after_blocks:
+            trial_start = np.arange(0, self.params.time_steps, self.params.block_size*self.params.magnitude_structure.shape[0])
 
         # set initial values: [value_left, value_right]
         value = np.full(2, self.params.init_values, dtype=np.float64)
@@ -259,6 +261,11 @@ class Model():
             self.rewards[i] = reward
             self.prediction_error[i] = prediction_error
             self.values[i] = value
+
+            if (reset_after_blocks):
+                if (i in trial_start):
+                    value = np.full(2, self.params.init_values, dtype=np.float64)
+
 
     def run_investment_model_old_old(self,
                                      params = None):
@@ -335,7 +342,7 @@ class Model():
             self.time[i] = self.time[i - 1] + time_investment + self.params.wait_time
 
             # update confidence value
-            # todo its this learning rule thats fucked up and idk how to fix it
+            # its this learning rule thats fucked up and idk how to fix it
             time_investment += self.params.TDRL_alpha * prediction_error
             investment_function[np.nonzero(self.params.confidences == 1)[0][0]] = time_investment
 
@@ -651,15 +658,16 @@ class Model():
         self.get_psychometric()
         data = self.psychometric.loc["current"].T
         data.index.astype(str)
-        sns.lineplot(data=data, dashes=False, markers=True, palette="Set1")
-        plt.xlabel("Current/Previous Stimulus")
+        sns.lineplot(data=data, dashes=False, marker="o", palette="Set1")
+        plt.xlabel("Current Stimulus")
         plt.ylabel("Average Choice")
 
     def plot_previous_choice(self):
         """
-        plots the spychometric (stimulus vs choice average) seperately for each previous choice
+        plots the pychometric (stimulus vs choice average) seperately for each previous choice
         """
-        data = pd.DataFrame(columns=["previous_left", "previous_right"],
+
+        data = pd.DataFrame(columns=["previous_left", "previous_right", "total"],
                             index=[i for i in np.unique(self.stimuli)])
         previous_choices = np.concatenate(([0],self.choices[:-1]))
         for stimulus in np.unique(self.stimuli):
@@ -667,6 +675,25 @@ class Model():
             data.loc[stimulus, "previous_left"] = np.mean(self.choices[previous_left_idx])
             previous_right_idx = np.logical_and(previous_choices == 1, self.stimuli == stimulus).nonzero()[0]
             data.loc[stimulus, "previous_right"] = np.mean(self.choices[previous_right_idx])
+
+        g = sns.lineplot(data=data, dashes=False, markers=True, palette="Set1")
+        g.set_xlabel("Current Stimulus")
+        g.set_ylabel("Average Choice")
+
+    def plot_previous_rewarded(self):
+        """
+        plots the average psychometric seperately for each previously rewarded choice
+        :return:
+        """
+
+        data = pd.DataFrame(columns=["previous_left", "previous_right", "total"],
+                            index=[i for i in np.unique(self.stimuli)])
+        previous_choices = np.concatenate(([0], self.choices[:-1]))
+        previous_rewards = np.concatenate(([0], self.rewards[:-1]))
+        for stimulus in np.unique(self.stimuli):
+            data.loc[stimulus, "previous_left"] = self.choices[(previous_choices == 0) & (self.stimuli == stimulus) & (previous_rewards == 1)].mean()
+            data.loc[stimulus, "previous_right"] = self.choices[(previous_choices == 1) & (self.stimuli == stimulus) & (previous_rewards == 1)].mean()
+            data.loc[stimulus, "total"] = self.choices[(self.stimuli == stimulus) & (previous_rewards == 1)].mean()
 
         g = sns.lineplot(data=data, dashes=False, markers=True, palette="Set1")
         g.set_xlabel("Current Stimulus")
@@ -699,15 +726,13 @@ class Model():
         psychometric = pd.DataFrame(index=["current"]+list(np.unique(self.stimuli)),
                                     columns = np.unique(self.stimuli))
 
+        previous_stimuli = np.concatenate(([0], self.stimuli[:-1]))
+        previous_rewards = np.concatenate(([0], self.rewards[:-1]))
+
         for stimulus in np.unique(self.stimuli):
-            psychometric.loc["current", stimulus] = np.mean(self.choices[self.stimuli == stimulus])
-
-        for previous_stimulus in np.unique(self.stimuli):
-            previous_stimuli = self.stimuli[np.nonzero(self.stimuli[:-1] == previous_stimulus)[0] + 1]
-            previous_choices = self.choices[np.nonzero(self.stimuli[:-1] == previous_stimulus)[0] + 1]
-
-            for stimulus in np.unique(previous_stimuli):
-                psychometric.loc[previous_stimulus, stimulus] = np.mean(previous_choices[previous_stimuli == stimulus])
+            psychometric.loc["current", stimulus] = self.choices[(self.stimuli == stimulus)].mean()
+            for previous_stimulus in np.unique(self.stimuli):
+                psychometric.loc[previous_stimulus, stimulus] = self.choices[(self.stimuli==stimulus)&(previous_stimuli == previous_stimulus)].mean()
 
         #updating matrix is the difference of the previous
         updating_matrix = psychometric.loc[np.unique(self.stimuli)] - psychometric.loc["current"]
@@ -761,7 +786,7 @@ class Model():
         # plot updating matrix
         img = axes[1].imshow(self.updating_matrix.values.astype(np.float64).T * 100,
                              cmap='RdBu', interpolation='nearest', aspect='auto')
-        plt.colorbar(img, ax=axes[1], label="Updating %")  # Add color bar
+        plt.colorbar(img, ax=axes[1], label="Updating %", fraction=0.05, pad=0.04)  # Add color bar
         axes[1].set_xlabel("Current Stimulus")
         axes[1].set_ylabel("Previous Stimulus")
         axes[1].set_xticks(np.arange(len(self.updating_matrix.index)))
@@ -769,10 +794,12 @@ class Model():
         axes[1].set_xticklabels(self.updating_matrix.index,rotation=90)
         axes[1].set_yticklabels(self.updating_matrix.index)
 
+
         # plot updating function
-        sns.lineplot(data=(self.updating_function * 100), dashes=False, markers=True, ax=axes[2])
+        sns.lineplot(data=(self.updating_function * 100), palette="Set1", dashes=False, markers=True, ax=axes[2])
         axes[2].set_xlabel("Previous Stimulus")
         axes[2].set_ylabel("Updating %")
+
 
     def plot_block_psychometric(self):
         data = pd.DataFrame(index = np.unique(self.params.blocks),
@@ -816,32 +843,31 @@ class Model():
 
         all_transitions = np.arange(start=0,stop=self.params.time_steps,step= self.params.block_size)
         n_transition_types = self.params.magnitude_structure.shape[0]
+        index = np.arange(before + after) - before
 
         fig, axes = plt.subplots(nrows = n_transition_types, ncols=1)
-
+        data = pd.DataFrame(index = index,
+                            columns = pd.MultiIndex.from_product(iterables = (range(n_transition_types),range(len(plot))),
+                                                                 names = ("transition","plot")))
         for type in range(n_transition_types):
             transitions = all_transitions[type+1::n_transition_types]
             for j in range(len(plot)):
-                data = np.empty(before+after)
-                index = np.arange(before +after)-before+1
                 variable = plot[j]
                 for i in range(before+after):
-                    data[i] = np.mean(variable[transitions+index[i]])
+                    data.loc[index[i],(type, j)] = np.mean(variable[transitions+index[i]-1]) #-1 because the values saved for each time_step are the new ones
 
-                sns.lineplot(data=data, alpha=0.6, color=colors[j],
-                             ax=axes[type], label=variables[j])
+                sns.lineplot(data=data[(type,j)], alpha=0.6, color=colors[j],
+                             ax=axes[type], label = f"{variables[j]}")
 
             block_before, block_after= self.params.reward_magnitude[transitions[0]-1], self.params.reward_magnitude[transitions[0]]
 
-            axes[type].axvspan(0, before-1, alpha = 0.3, color = colors[-1],
+
+            axes[type].axvspan(-before, 0, alpha = 0.3, color = colors[-1],
                                label = f"Reward Magnitude left: {block_before[0]} \n Reward Magnitude right: {block_before[1]}")
-            axes[type].axvspan(before-1, before+after, alpha = 0.3, color = colors[-2],
+            axes[type].axvspan(0, after, alpha = 0.3, color = colors[-2],
                                label = f"Reward Magnitude left: {block_after[0]} \n Reward Magnitude right: {block_after[1]}")
 
-
-
-
-
+        return data
 
     def plot_previous_bias(self,
                            metric = "correct",
@@ -1012,7 +1038,7 @@ class Model():
 
 
 def plot_investment(self, x = "confidence"):
-    # todo plot average time investment for each confidence level/stimulus
+    # plot average time investment for each confidence level/stimulus
     # calculate the average time investment for each confidence level
     if x =="confidence":
         data = pd.DataFrame(index = self.params.confidences, columns= ["mean", "sd"])
@@ -1034,10 +1060,8 @@ def plot_investment(self, x = "confidence"):
 
 def plot_reward_real_time(self):
     real_time = np.zeros(self.params.time_steps)
-
+    # todo plot reward per time
     ...
-
-# todo plot reward per time
 
 
 def plot_params(params_a = [0.2,0.5,0.7],
@@ -1091,22 +1115,21 @@ def plot_params(params_a = [0.2,0.5,0.7],
     return params_ab
 
 
-# self = Model(Params(time_steps=250000))
-# self.run_investment_model()
-# self.plot_psychometric()
+def simple_model(steps = 100000):
+    model = Model(Params(time_steps = steps))
+    model.run_model()
+    return model
 
-"""
-Hi Lilly, ich bin mir nicht sicher was deine konkreten pläne mit dem code sind, 
-vielleicht hier in kurz ein protokoll was ungefähr dem letzten code entspricht den ich von dir bekommen hab
-"""
-self = Model(Params(time_steps=100000))
-self.params.get_blocks(magnitude_structure = [(1,1),(1,0.5),(0.5,1)], block_size = 400)
-self.run_model()
-self.plot_block_transition()
-# # kurzer überblick über wie gut das modell lernt
-# self.plot_psychometric()
-# # plot the values
-# self.plot(variables = ["values_left", "values_right"], start = 1200, stop = 4000, window_size=3)
-# # plot some pyschometrics for the bias blocks
-# self.plot_previous_bias()
+def block_model(steps = 100000):
+    model = Model(Params(time_steps=steps))
+    model.params.get_blocks(magnitude_structure=[(1, 1), (1, 0.5), (0.5, 1)], block_size=400)
+    model.run_model()
+    return model
+
+def investment_model(steps = 100000):
+    model = Model(Params(time_steps=steps))
+    model.run_investment_model()
+    return model
+
+
 
