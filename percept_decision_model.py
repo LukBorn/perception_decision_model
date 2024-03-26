@@ -227,7 +227,7 @@ class Model():
         print("Model Running:")
         for i in tqdm(range(self.params.time_steps)):
             # generate stimulus: random sample from one of 10 equally spaced stimuli between -1 and 1
-            stimulus = np.random.choice(np.linspace(-1, 1, 10), 1).round(3)[0]
+            stimulus = np.random.choice(np.linspace(-1, 1, 11), 1).round(3)[0]
 
             # internal estimate of the stimulus is normally distributed
             # with constant variance around true stimulus contrast sigma
@@ -242,14 +242,22 @@ class Model():
             # greedy choice
             choice = self.params.policy(Q, epsilon = self.params.epsilon, beta=self.params.beta)
 
+            self.confidence[i] = np.abs(Q[0]-Q[1]) * 0.5 + 0.5
+            # discretize by setting it to the closest one in our confidence statespace
+            self.confidence[i] = self.params.confidences[np.abs(self.params.confidences - self.confidence[i]).argmin()]
+
             # stimulus < 0 and choice = 0 -> reward = 1
             # stimulus > 0 and choice = 1 -> reward = 0
-            if [-1, 1][choice] != np.sign(stimulus):  # incorrect choice
+            if stimulus == 0:
+                reward = np.random.binomial(1, 0.5, 1)[0]
+            elif [-1, 1][choice] != np.sign(stimulus):  # incorrect choice
                 reward = 0
             else:
                 # reward is reward magnitude * 1 or 0 depending on reward probability
                 reward = self.params.reward_magnitude[i, choice] * \
                          np.random.binomial(1, self.params.reward_probability[i, choice], 1)[0]
+
+
 
             prediction_error = reward - Q[choice]
             # update the value by adding the product of learning rule alpha and reward prediction error
@@ -290,13 +298,17 @@ class Model():
 
         self.model_type = "time_investment_old_old"
 
+        print(f"max punishment: {self.params.TDRL_omega * self.params.TDRL_steps}")
+
         # set initial values: [value_left, value_right]
         value = np.full(2, self.params.init_values, dtype=np.float64)
 
-        # set the investment values for each confidence
-        investment_function = self.params.TDRL_init
+        # confidence investment mapping
+        investment_function = pd.DataFrame(index = self.params.confidences,
+                                           data = np.full(self.params.confidences.shape[0],self.params.TDRL_steps))
 
-        self.time = np.zeros(self.params.time_steps)
+        self.TDRL_values = np.empty((self.params.time_steps, self.params.confidences.shape[0]))
+        self.time_investment = np.zeros(self.params.time_steps)
 
         print("Model Running:")
         for i in tqdm(range(self.params.time_steps)):
@@ -306,47 +318,52 @@ class Model():
             # generate internal estimate of the stimulus
             percept = np.random.normal(stimulus, self.params.sigma, 1)[0]
 
-            # calculate decision confidence
-            confidence = 0.5 * np.abs(percept) + 0.5
-            # discretize by setting it to the closest one in our confidence statespace
-            confidence = self.params.confidences[np.abs(self.params.confidences - confidence).argmin()]
-
-            #calculate time investment
-            time_investment = investment_function[np.nonzero(self.params.confidences == 1)[0][0]]
-
             # calculate value-adjusted percept probability Q
             p_percept = 0.5 * (1 + scipy.special.erf(percept / (np.sqrt(2) * self.params.sigma)))
-            p_percept = np.array([1 - p_percept, p_percept]).T[0]
+            p_percept = np.array([1 - p_percept, p_percept])
             Q = p_percept * value
 
             # calculate choice based on Q -> left = 0, right = 1
             choice = self.params.policy(Q, epsilon = self.params.epsilon, beta=self.params.beta)
 
-            # generate reward time
-            reward_time = np.random.randint(5,10)/10
+            # calculate decision confidence
+            confidence = p_percept[choice]
+            # discretize by setting it to the closest one in our confidence statespace
+            confidence = self.params.confidences[np.abs(self.params.confidences - confidence).argmin()]
 
-            # calculate reward
+            # calculate time investment
+            time_investment = investment_function.loc[confidence,0]
+
+            # generate reward time
+            reward_time = sc.trunc_expon(lower_limit=0.0625 * self.params.TDRL_steps,
+                                         upper_limit=self.params.TDRL_steps,
+                                         lamda= 0.1875*self.params.TDRL_steps)
+
+            #calculate reward
             if [-1, 1][choice] != np.sign(stimulus): # incorrect choice
-                reward = self.params.omega * time_investment
+                reward = self.params.TDRL_omega * time_investment
             elif time_investment < reward_time: # early withdrawal
-                reward = self.params.omega * time_investment
-            else:
+                reward = self.params.TDRL_omega * time_investment
+            else: #correct choice
                 reward = self.params.reward_magnitude[i, choice] * \
-                         np.random.binomial(1, self.params.reward_probability[i, choice], 1)[0] + self.params.omega * time_investment
+                         np.random.binomial(1, self.params.reward_probability[i, choice], 1)[0] + \
+                         self.params.TDRL_omega * reward_time
+
 
             # update the value by adding the product of learning rule alpha and reward prediction error
             prediction_error = reward - Q[choice]
             value[choice] += self.params.alpha * prediction_error
 
             # calculate the time_point of the trial
-            self.time[i] = self.time[i - 1] + time_investment + self.params.wait_time
+            self.time_investment[i] = time_investment
 
             # update confidence value
             # its this learning rule thats fucked up and idk how to fix it
-            time_investment += self.params.TDRL_alpha * prediction_error
-            investment_function[np.nonzero(self.params.confidences == 1)[0][0]] = time_investment
 
+            time_investment += self.params.TDRL_alpha * reward * time_investment
+            investment_function.loc[confidence] = time_investment
 
+            self.reward_time = reward_time
             self.stimuli[i] = stimulus
             self.percepts[i] = percept
             self.confidence[i] = confidence
@@ -354,6 +371,7 @@ class Model():
             self.rewards[i] = reward
             self.prediction_error[i] = prediction_error
             self.values[i] = value
+            self.TDRL_values[i] = investment_function.values.T[0]
 
     def run_investment_model_old(self,
                                  params = None):
@@ -381,7 +399,7 @@ class Model():
 
         self.model_type = "time_investment_TDRL_old"
 
-        print(f"Total reward for non-rewarded, non-terminated trial is {self.params.TDRL_steps*self.params.TDRL_omega}")
+        print(f"max punishment: {self.params.TDRL_steps*self.params.TDRL_omega}")
 
 
         # set initial values: [value_left, value_right]
@@ -397,7 +415,7 @@ class Model():
         else:
             TDRL_values = self.TDRL_values
 
-        self.time = np.zeros(self.params.time_steps)
+        self.time_investment = np.zeros(self.params.time_steps)
 
         print("Model Running:")
         for i in tqdm(range(self.params.time_steps)):
@@ -426,10 +444,12 @@ class Model():
             elif np.random.binomial(1, self.params.reward_probability[i, choice], 1)[0] == 0: #clutch trial
                 reward_time = self.params.TDRL_steps + 10
             else:
-                reward_time = sc.trunc_expon()
+                reward_time = sc.trunc_expon(lower_limit=0.0625 * self.params.TDRL_steps,
+                                             upper_limit=self.params.TDRL_steps,
+                                             lamda=0.1875 * self.params.TDRL_steps)
                 #todo add a way for the model to learn by giving the reward progressively later
                 # either by passing a function in here, or making a seperate function,
-                # but then the parameter for randint would have to be different bc the statespae has to stay the same
+                # but then the parameter for randint would have to be different bc the statespace has to stay the same
 
             for time_step in range(self.params.TDRL_steps):
                 # states tuples (confidence, time_step) that can be used to index into
@@ -447,7 +467,7 @@ class Model():
                 elif time_step == self.params.TDRL_steps - 1 : #trial time limit has been reached
                     reward = self.params.TDRL_omega * time_step
                     max_next_q = 0
-                elif time_step == reward_time: # reward time babyyyy
+                elif time_step >= reward_time: # reward time babyyyy
                     reward =  self.params.TDRL_omega * time_step + self.params.reward_magnitude[i, choice]
                     max_next_q = 0
                 else: # stay
@@ -465,7 +485,7 @@ class Model():
             prediction_error = reward - Q[choice]
             value[choice] += self.params.alpha * prediction_error
 
-            self.time[i] = time_step
+            self.time_investment[i] = time_step
             self.stimuli[i] = stimulus
             self.percepts[i] = percept
             self.confidence[i] = confidence
@@ -494,6 +514,8 @@ class Model():
         # set initial values: [value_left, value_right]
         value = np.full(2, self.params.init_values, dtype=np.float64)
 
+        self.time_investment = np.zeros(self.params.time_steps)
+
         if self.TDRL_values is None:
             TDRL_values = pd.DataFrame(index=["stay","leave"],
                                        columns=np.arange(self.params.TDRL_steps),
@@ -503,7 +525,8 @@ class Model():
         else:
             TDRL_values = self.TDRL_values
 
-        self.time = np.zeros(self.params.time_steps)
+        self.reward_time = np.zeros(self.params.time_steps)
+
 
         print("Model Running:")
         for i in tqdm(range(self.params.time_steps)):
@@ -513,11 +536,6 @@ class Model():
             # generate internal estimate of the stimulus
             percept = np.random.normal(stimulus, self.params.sigma, 1)[0]
 
-            # calculate decision confidence
-            confidence = 0.5 * np.abs(percept) + 0.5
-            # discretize by setting it to the closest one in our confidences
-            confidence = self.params.confidences[np.abs(self.params.confidences - confidence).argmin()]
-
             # calculate value-adjusted percept probability Q
             p_percept = 0.5 * (1 + scipy.special.erf(percept / (np.sqrt(2) * self.params.sigma)))
             p_percept = np.array([p_percept, 1 - p_percept]).T
@@ -526,22 +544,29 @@ class Model():
             # calculate choice based on Q -> left = 0, right = 1
             choice = self.params.policy(Q, epsilon=self.params.epsilon, beta=self.params.beta)
 
+            # calculate decision confidence
+            confidence = p_percept[choice]
+
             # generate reward_time
             if [-1, 1][choice] != np.sign(stimulus):  # incorrect choice
                 reward_time = self.params.TDRL_steps + 10
             elif np.random.binomial(1, self.params.reward_probability[i, choice], 1)[0] == 0:  # clutch trial
                 reward_time = self.params.TDRL_steps + 10
             else:
-                reward_time = sc.trunc_expon() / self.params.TDRL_bins
+                reward_time = sc.trunc_expon(lower_limit=0.0625 * self.params.TDRL_steps,
+                                             upper_limit=self.params.TDRL_steps,
+                                             lamda=0.1875 * self.params.TDRL_steps)
                 # todo add a way for the model to learn by giving the reward progressively later
                 # either by passing a function in here, or making a seperate function,
                 # but then the parameter for randint would have to be different bc the statespae has to stay the same
 
             for time_step in TDRL_values.columns.values:
                 # choose the action
-                action = TDRL_values.index[self.params.TDRL_policy(TDRL_values[time_step],
+                values = TDRL_values
+                values[0] *= confidence
+                action = TDRL_values.index[self.params.TDRL_policy(values[time_step],
                                                                    epsilon=self.params.TDRL_epsilon)]
-                q = TDRL_values.loc[action, time_step] * confidence
+                q = TDRL_values.loc[action, time_step]
 
                 # calculate the reward for this action, and the next step
                 if action == 1:  # leave
@@ -550,15 +575,15 @@ class Model():
                 elif time_step == self.params.TDRL_steps - 1:  # trial time limit has been reached
                     reward = self.params.TDRL_omega * time_step
                     max_next_q = 0
-                elif time_step == reward_time:  # reward time babyyyy
+                elif time_step >= reward_time:  # reward time babyyyy
                     reward = self.params.TDRL_omega * time_step + self.params.reward_magnitude[i, choice]
                     max_next_q = 0
                 else:  # stay
                     reward = self.params.TDRL_omega * time_step
-                    max_next_q = TDRL_values[time_step + 1].max() * confidence
+                    max_next_q = values[time_step + 1].max()
 
                 TD_error = reward + self.params.TDRL_gamma * max_next_q - q
-                TDRL_values.loc[action, time_step] = q + self.params.TDRL_alpha * TD_error
+                TDRL_values.loc[action, time_step] += self.params.TDRL_alpha * TD_error
 
                 if max_next_q == 0:
                     break
@@ -567,7 +592,7 @@ class Model():
             prediction_error = reward - Q[choice]
             value[choice] += self.params.alpha * prediction_error
 
-            self.time[i] = time_step
+            self.time_investment[i] = time_step
             self.stimuli[i] = stimulus
             self.percepts[i] = percept
             self.confidence[i] = confidence
@@ -580,8 +605,8 @@ class Model():
 
     def plot(self,
              variables=None,
+             stop=2000,
              start = 0,
-             stop = 2000,
              window_size = 10,
              block_colors = None,
              ):
@@ -715,7 +740,8 @@ class Model():
         plt.ylabel('Reward Prediction Error')
 
     def get_psychometric(self,
-                         difficulty_cut = 0.6):
+                         difficulty_cut = 0.6,
+                         subset = "total"):
         """
         calculates the psychometrics of the model -> see plot_psychometric() description
 
@@ -730,9 +756,22 @@ class Model():
         previous_rewards = np.concatenate(([0], self.rewards[:-1]))
 
         for stimulus in np.unique(self.stimuli):
-            psychometric.loc["current", stimulus] = self.choices[(self.stimuli == stimulus)].mean()
+            if subset == "rewarded":
+                psychometric.loc["current", stimulus] = self.choices[(self.stimuli == stimulus) & (previous_rewards == 1)].mean()
+            elif subset == "unrewarded":
+                psychometric.loc["current", stimulus] = self.choices[(self.stimuli == stimulus) & (previous_rewards == 0)].mean()
+            else:
+                psychometric.loc["current", stimulus] = self.choices[(self.stimuli == stimulus)].mean()
             for previous_stimulus in np.unique(self.stimuli):
-                psychometric.loc[previous_stimulus, stimulus] = self.choices[(self.stimuli==stimulus)&(previous_stimuli == previous_stimulus)].mean()
+                if subset == "rewarded":
+                    psychometric.loc[previous_stimulus, stimulus] = self.choices[
+                        (self.stimuli == stimulus) & (previous_stimuli == previous_stimulus) & (previous_rewards == 1)].mean()
+                elif subset == "unrewarded":
+                    psychometric.loc[previous_stimulus, stimulus] = self.choices[
+                        (self.stimuli == stimulus) & (previous_stimuli == previous_stimulus) & (
+                                    previous_rewards == 0)].mean()
+                else:
+                    psychometric.loc[previous_stimulus, stimulus] = self.choices[(self.stimuli==stimulus)&(previous_stimuli == previous_stimulus)].mean()
 
         #updating matrix is the difference of the previous
         updating_matrix = psychometric.loc[np.unique(self.stimuli)] - psychometric.loc["current"]
@@ -1036,6 +1075,19 @@ class Model():
         axes[2].set_ylabel("confidence")
         fig.colorbar(im)
 
+
+    def plot_viviometric(self):
+        data = pd.DataFrame(index = np.unique(self.stimuli),
+                            columns = ["Correct", "Incorrect"])
+        choices = self.choices
+        choices[choices == 0] = -1
+        for stimulus in np.unique(self.stimuli):
+            data.loc[stimulus, "Correct"] = self.time_investment[
+                (np.sign(self.stimuli) == choices) & (self.stimuli == stimulus)].mean()
+            data.loc[stimulus, "Incorrect"] = self.time_investment[
+                ~(np.sign(self.stimuli) == choices) & (self.stimuli == stimulus)].mean()
+
+        sns.lineplot(data)
 
 def plot_investment(self, x = "confidence"):
     # plot average time investment for each confidence level/stimulus
