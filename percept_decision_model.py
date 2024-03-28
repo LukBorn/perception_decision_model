@@ -15,7 +15,7 @@ class Params():
                  seed = 42,
                  init_values = 1,
                  alpha = 0.5,
-                 sigma = np.sqrt(0.2),
+                 sigma = 0.44721359, #np.sqrt(0.2)
                  time_steps = 100000,
                  policy=sc.greedy,
                  beta=9.097,
@@ -227,7 +227,7 @@ class Model():
         print("Model Running:")
         for i in tqdm(range(self.params.time_steps)):
             # generate stimulus: random sample from one of 10 equally spaced stimuli between -1 and 1
-            stimulus = np.random.choice(np.linspace(-1, 1, 11), 1).round(3)[0]
+            stimulus = np.random.choice(np.linspace(-1, 1, 10), 1).round(3)[0]
 
             # internal estimate of the stimulus is normally distributed
             # with constant variance around true stimulus contrast sigma
@@ -914,7 +914,11 @@ class Model():
         '''
         plot are based on previous lean or previous rewarded block
         psychometric
-        :return:
+
+        Im pretty sure this plotting function is quite useless,
+        I barely remember myself what exactly it plots, so it cant have been that important
+
+
         '''
         # get lean and rich blocks
         # 0 -> lean, 1 -> rich, 2 -> unbiased
@@ -1019,6 +1023,12 @@ class Model():
         return data
 
     def plot_bias_prediction_error(self):
+        '''
+        plots the
+
+        :return:
+        '''
+
         # get lean and rich blocks
         # 0 -> lean, 1 -> rich, 2 -> unbiased
         if "magnitude" in self.params.block_type:
@@ -1087,7 +1097,9 @@ class Model():
             data.loc[stimulus, "Incorrect"] = self.time_investment[
                 ~(np.sign(self.stimuli) == choices) & (self.stimuli == stimulus)].mean()
 
-        sns.lineplot(data)
+        sns.lineplot(data=data, dashes=False, marker="o", palette="Set1")
+        plt.set_xlabel("Stimulus")
+        plt.set_ylabel("Average Time Investment")
 
 def plot_investment(self, x = "confidence"):
     # plot average time investment for each confidence level/stimulus
@@ -1128,7 +1140,7 @@ def plot_params(params_a = [0.2,0.5,0.7],
         for param_a in params_a:
             for param_b in params_b:
                 #change the parameters in this line to make sure that your parameters are the corect ones in th
-                model = Model(Params(alpha=param_a, delta=param_b,time_steps=n))
+                model = Model(Params(alpha=param_a, sigma=param_b,time_steps=n))
                 model.run_model()
                 #change what exactly you want to plot here
                 _,matrix,function = model.get_psychometric()
@@ -1178,9 +1190,12 @@ def block_model(steps = 100000):
     model.run_model()
     return model
 
-def investment_model(steps = 100000):
+def catch_block_model(steps = 100000):
     model = Model(Params(time_steps=steps))
-    model.run_investment_model()
+    model.params.get_blocks(magnitude_structure=[(1, 1), (1, 0.5), (0.5, 1)],
+                            probability_structure=[(0.95,0.95)] * 3,
+                            block_size=400)
+    model.run_model(reset_after_blocks=True)
     return model
 
 

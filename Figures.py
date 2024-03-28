@@ -236,13 +236,11 @@ def Figure_2(self):
 
     #Fig C2
 
-    # todo ask lily for the mouse data
-
-
+    #real mouse
 
 def Figure_3(models = None,
              steps = 50000,
-             alpha_list = [0.1,0.5,0.9],
+             alpha_list = [0.01,0.4,0.9],
              ):
     param_list = []
     for alpha in alpha_list:
@@ -649,16 +647,19 @@ def Figure_TDRL_models(models = None):
         old2 = Model()
         old2.run_investment_model_old_old()
 
-    fig, ax = plt.subplots(nrows=2, ncols=3, figsize = (9,5))
+
+
+    fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(13, 7))
+    plt.subplots_adjust(left=0.1, bottom=0.1, right=0.9, top=0.9, wspace=0.35, hspace=0.25)
 
     A1 = ax[0,0]
-    A1.text(-0.2, 0.94, 'A', fontsize=15, transform=A1.transAxes)
+    A1.text(-0.21, 0.96, 'A', fontsize=15, transform=A1.transAxes)
     A2 = ax[1,0]
     B1 = ax[0,1]
-    B1.text(-0.2, 0.94, 'B', fontsize=15, transform=B1.transAxes)
+    B1.text(-0.21, 0.96, 'B', fontsize=15, transform=B1.transAxes)
     B2 = ax[1,1]
     C1 = ax[0,2]
-    C1.text(-0.2, 0.94, 'C', fontsize=15, transform=C1.transAxes)
+    C1.text(-0.3, 0.96, 'C', fontsize=15, transform=C1.transAxes)
     C2 = ax[1,2]
 
     old2.get_psychometric()
@@ -666,11 +667,11 @@ def Figure_TDRL_models(models = None):
     data.index.astype(str)
     sns.lineplot(data=data, dashes=False, marker="o", palette="Set1", ax = A1)
     A1.set_xlabel("Stimulus")
-    A1.ylabel("Average Choice")
+    A1.set_ylabel("Average Choice")
 
     data = pd.DataFrame(index=np.unique(old2.stimuli),
                         columns=["Correct", "Incorrect"])
-    choices = old2.choices
+    choices = old2.choices.copy()
     choices[choices == 0] = -1
     for stimulus in np.unique(old2.stimuli):
         data.loc[stimulus, "Correct"] = old2.time_investment[
@@ -688,11 +689,11 @@ def Figure_TDRL_models(models = None):
     data.index.astype(str)
     sns.lineplot(data=data, dashes=False, marker="o", palette="Set1", ax=B1)
     B1.set_xlabel("Stimulus")
-    B1.ylabel("Average Choice")
+    B1.set_ylabel("Average Choice")
 
     data = pd.DataFrame(index=np.unique(old.stimuli),
                         columns=["Correct", "Incorrect"])
-    choices = old.choices
+    choices = old.choices.copy()
     choices[choices == 0] = -1
     for stimulus in np.unique(old.stimuli):
         data.loc[stimulus, "Correct"] = old.time_investment[
@@ -709,11 +710,11 @@ def Figure_TDRL_models(models = None):
     data.index.astype(str)
     sns.lineplot(data=data, dashes=False, marker="o", palette="Set1", ax=C1)
     C1.set_xlabel("Stimulus")
-    C1.ylabel("Average Choice")
+    C1.set_ylabel("Average Choice")
 
     data = pd.DataFrame(index=np.unique(new.stimuli),
                         columns=["Correct", "Incorrect"])
-    choices = new.choices
+    choices = new.choices.copy()
     choices[choices == 0] = -1
     for stimulus in np.unique(new.stimuli):
         data.loc[stimulus, "Correct"] = new.time_investment[
@@ -725,4 +726,4 @@ def Figure_TDRL_models(models = None):
     C2.set_xlabel("Stimulus")
     C2.set_ylabel("Average Time Investment")
 
-    return new, old, old2
+    return old2, old, new
