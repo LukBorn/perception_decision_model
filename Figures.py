@@ -340,7 +340,7 @@ def Figure_3(models = None,
     data[alpha_list[1]] = (np.std(model1.values[0]) + np.std(model1.values[1])) / 2
     data[alpha_list[2]] = (np.std(model2.values[0]) + np.std(model2.values[1])) / 2
     data = data.iloc[0]
-    data.index = [f"sigma: {alpha}" for alpha in alpha_list]
+    data.index = [f"alpha: {alpha}" for alpha in alpha_list]
     sns.barplot(x=data.index, y=data.values, ax=B)
     B.set_xlabel("")
     B.set_ylabel("Value Standard Deviation")

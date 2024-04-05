@@ -7,6 +7,12 @@ import seaborn as sns
 import scripts as sc
 from tqdm import tqdm
 
+#TODO: big todos in my opinion
+# get the time investment to work
+# remove self.reward_probability from blocks, it is unnecessarily complicated i think
+# find a way to return the graph from plotting functions, so you can just pass the function into one big sublot to make figures
+
+
 class Params():
     """
     parameter class holding all model parameters
@@ -22,14 +28,12 @@ class Params():
                  epsilon=0.5,
                  TDRL_init = 1,
                  TDRL_steps = 20,
-                 TDRL_bins = 0.5,
                  TDRL_omega = -0.008,
                  TDRL_policy=sc.epsilon_greedy,
                  TDRL_epsilon = 0.1,
                  TDRL_beta = None,
                  TDRL_alpha = 0.1,
                  TDRL_gamma = 1,
-                 wait_time = 2,
                  ):
 
         np.random.seed = seed
@@ -64,9 +68,6 @@ class Params():
     # TDRL_steps -> the maximum amount of time steps the TDRL model for determining time investment can take
         self.TDRL_steps = TDRL_steps
 
-    # TDRL_bins -> size of the time bin (in seconds)
-        self.TDRL_bins = TDRL_bins
-
     # omega -> punishment factor that the time investment is multiplied by
         self.TDRL_omega = TDRL_omega
 
@@ -85,9 +86,6 @@ class Params():
 
     #TDRL_gamma: discount factor for the max(next q) of the TDRL
         self.TDRL_gamma = TDRL_gamma
-
-    # wait_time -> time that agent waits between trials
-        self.wait_time = wait_time
 
 
     # reward magnitude: array with [reward_magnitude_left, reward_magnitude_right] at each time step i
@@ -173,23 +171,52 @@ class Model():
     Belief-based reinforcement learning models account for choice updating
     Methods: TDRL model with stimulus belief state
 
-    run model using run_model()
+    Run the model:
+    run_model()
+        simple model - no time investment task
+    run_TDRL_model_old_old()
+        model time investment as a "function" of discrete confidence
+    run_TDRL_model_old()
+        model time investment as series of stay/leave decisions
+        values as matrix of [time steps]x[discrete confidence]x[stay/leave]
+    run_TDRL_model_old()
+        model time investment as series of stay/leave decisions
+        values as matrix of [time steps]x[stay*confidence/leave]
 
-    includes plotting functions:
-    plot_psychometric()
-        plots psychometric, updating matrix, and updating function
+
+    Plotting functions:
+    plot_simple_psychometric()
+        standard psychometric
     plot([variables],start,stop)
         plots variables like stimuli, choices, rewards, or left and right values averaged over window_size
         in a line graph
     plot_previous_choice()
         plots psychometric for each previous choice separately
+    plot_previous_rewarded()
+        plots rewarded psychometric for each previous choice separately
     plot_prediction_error()
         plots prediction error against stimulus
     plot_block_psychometric()
         plots the psychometric for each blocktype seperately
+    plot_psychometric()
+        plots psychometric, updating matrix, and updating function like Lak et al 2019
+    plot_TDRL_values()
+        plot TDRL values over time, to see if the model learns to invest time properly
+    plot_vevaiometric()
+        plot average time investment against stimulus, separately for correct and incorrect choices
+
+
+    The following functions are kind of useless, or i forgot why i made them in the first place.
+    If you can get anything  useful out of them, thats more than i managed.
+
     plot_previous_bias()
         plots psychometric for if your previous choice was biased for or against
+    plot_bias prediction error()
+        plots prediction error for if your previous choice was biased for or against
+    plot_investment()
+        basically the same thing as plot_vevaiometric(), just worse
     """
+
     def __init__(self,
                  params = Params()):
         self.params = params
@@ -217,7 +244,7 @@ class Model():
         if params is not None:
             self.params = params
 
-        self.model_type = "standard"
+        self.model_type = "simple"
         if reset_after_blocks:
             trial_start = np.arange(0, self.params.time_steps, self.params.block_size*self.params.magnitude_structure.shape[0])
 
@@ -291,6 +318,7 @@ class Model():
         generate reward_time
         recieve reward based on choice and time investment
         update values based on reward prediction error
+        update investment function values based on ???
         """
         #generate params class if none is specified
         if params is not None:
@@ -358,7 +386,7 @@ class Model():
             self.time_investment[i] = time_investment
 
             # update confidence value
-            # its this learning rule thats fucked up and idk how to fix it
+            # todo find a good way to update this value function
 
             time_investment += self.params.TDRL_alpha * reward * time_investment
             investment_function.loc[confidence] = time_investment
@@ -447,9 +475,6 @@ class Model():
                 reward_time = sc.trunc_expon(lower_limit=0.0625 * self.params.TDRL_steps,
                                              upper_limit=self.params.TDRL_steps,
                                              lamda=0.1875 * self.params.TDRL_steps)
-                #todo add a way for the model to learn by giving the reward progressively later
-                # either by passing a function in here, or making a seperate function,
-                # but then the parameter for randint would have to be different bc the statespace has to stay the same
 
             for time_step in range(self.params.TDRL_steps):
                 # states tuples (confidence, time_step) that can be used to index into
@@ -499,9 +524,7 @@ class Model():
     def run_investment_model(self,
                              params = None):
         """
-        change to old model:
-        only model time -> multiply confidence into the value function deciding stay or leave
-
+        Incorporate confidence into the model by multiplying it with the value for stay at each time step
         """
         # set params if different ones specified
         if params is not None:
@@ -556,9 +579,6 @@ class Model():
                 reward_time = sc.trunc_expon(lower_limit=0.0625 * self.params.TDRL_steps,
                                              upper_limit=self.params.TDRL_steps,
                                              lamda=0.1875 * self.params.TDRL_steps)
-                # todo add a way for the model to learn by giving the reward progressively later
-                # either by passing a function in here, or making a seperate function,
-                # but then the parameter for randint would have to be different bc the statespae has to stay the same
 
             for time_step in TDRL_values.columns.values:
                 # choose the action
@@ -680,6 +700,9 @@ class Model():
         plt.show()
 
     def plot_simple_psychometric(self):
+        """
+        plot the psychometric
+        """
         self.get_psychometric()
         data = self.psychometric.loc["current"].T
         data.index.astype(str)
@@ -691,7 +714,8 @@ class Model():
         """
         plots the pychometric (stimulus vs choice average) seperately for each previous choice
         """
-
+        # todo you can definitely combine this function with self.plot_previous_rewarded()
+        # by passing rewarded = True, False or None into the function as a parameter
         data = pd.DataFrame(columns=["previous_left", "previous_right", "total"],
                             index=[i for i in np.unique(self.stimuli)])
         previous_choices = np.concatenate(([0],self.choices[:-1]))
@@ -707,8 +731,7 @@ class Model():
 
     def plot_previous_rewarded(self):
         """
-        plots the average psychometric seperately for each previously rewarded choice
-        :return:
+        plots the psychometric for each previously rewarded choice, seperately for each choice
         """
 
         data = pd.DataFrame(columns=["previous_left", "previous_right", "total"],
@@ -841,6 +864,11 @@ class Model():
 
 
     def plot_block_psychometric(self):
+        '''
+        plot the psychometrics, separately for each block
+        '''
+
+
         data = pd.DataFrame(index = np.unique(self.params.blocks),
                             columns = np.unique(self.stimuli))
         for block in np.unique(self.params.blocks):
@@ -866,6 +894,18 @@ class Model():
                               variables = None,
                               before = 50,
                               after = 50):
+        """
+        plots values, choices or rewards, centered on block transitions, averaged over all block transitons
+
+        :param variables: what to plot
+            must be in ["values_left","values_right","choice","reward"]
+        :param before: how many trials before transition to start plotting from
+        :param after: how many trials after transition to stop plotting at
+        :return:
+        """
+
+        # todo (not important) show in plot how many transitions were averaged over
+
         if variables is None:
             variables = ["values_left", "values_right"]
         plot = []
@@ -913,12 +953,6 @@ class Model():
                            plot = "metric"):
         '''
         plot are based on previous lean or previous rewarded block
-        psychometric
-
-        Im pretty sure this plotting function is quite useless,
-        I barely remember myself what exactly it plots, so it cant have been that important
-
-
         '''
         # get lean and rich blocks
         # 0 -> lean, 1 -> rich, 2 -> unbiased
@@ -1024,9 +1058,7 @@ class Model():
 
     def plot_bias_prediction_error(self):
         '''
-        plots the
-
-        :return:
+        plots the the reward prediction error separately for previously rich, lean or unbiased choices
         '''
 
         # get lean and rich blocks
@@ -1061,6 +1093,9 @@ class Model():
 
 
     def plot_TDRL_values(self):
+        if self.model_type != "time_investment_TDRL_old":
+            raise TypeError("model must be of type 'time_investment_TDRL_old'")
+
         fig, axes = plt.subplots(nrows=3, ncols=1)
 
         # plot the stay values
@@ -1086,11 +1121,21 @@ class Model():
         fig.colorbar(im)
 
 
-    def plot_viviometric(self):
+    def plot_vevaiometric(self):
+        '''
+        plot the average time investment for each stimulus, seperately for correct and incorrect choices
+        '''
+
+        if self.model_type == "simple":
+            raise TypeError("model must include time investment")
+
+        # define data to save your data into
         data = pd.DataFrame(index = np.unique(self.stimuli),
                             columns = ["Correct", "Incorrect"])
-        choices = self.choices
+        # define a copy, otherwise it changes the original choices
+        choices = self.choices.copy()
         choices[choices == 0] = -1
+        # calculate the average time investment for each stimulus, separately for correct and incorrect choices
         for stimulus in np.unique(self.stimuli):
             data.loc[stimulus, "Correct"] = self.time_investment[
                 (np.sign(self.stimuli) == choices) & (self.stimuli == stimulus)].mean()
@@ -1101,31 +1146,53 @@ class Model():
         plt.set_xlabel("Stimulus")
         plt.set_ylabel("Average Time Investment")
 
-def plot_investment(self, x = "confidence"):
-    # plot average time investment for each confidence level/stimulus
-    # calculate the average time investment for each confidence level
-    if x =="confidence":
-        data = pd.DataFrame(index = self.params.confidences, columns= ["mean", "sd"])
-        for confidence in self.params.confidences:
-            data.loc[confidence,"mean"] = np.mean(self.time[self.confidence == confidence])
-            data.loc[confidence,"sd"] = np.std(self.time[self.confidence == confidence])
-    elif x == "stimulus":
-        data = pd.DataFrame(index=np.unique(self.stimuli), columns=["mean", "sd"])
-        for stimulus in np.unique(self.stimuli):
-            data.loc[stimulus, "mean"] = np.mean(self.time[self.confidence == stimulus])
-            data.loc[stimulus, "sd"] = np.std(self.time[self.confidence == stimulus])
-            # todo this doesnt work for some reason
-    else: print("you suck lol")
-    sns.lineplot(data=data["mean"], marker='o')
-    # Add error bars
-    plt.errorbar(data.index, data['mean'], yerr=data['sd'], fmt='none', capsize=5)
-    plt.xlabel(x)
-    plt.ylabel('Average time investement')
 
-def plot_reward_real_time(self):
-    real_time = np.zeros(self.params.time_steps)
-    # todo plot reward per time
-    ...
+    def plot_investment(self,
+                        x = "confidence"):
+        # plot average time investment for each confidence level/stimulus
+        # calculate the average time investment for each confidence level
+        # todo plot the investment for correct and incorrect choices seperately
+        # todo fix the x == stimulus
+        # ok nvm this is deprecated, use self.plot_vevaiometric() instead
+        if self.model_type == "simple":
+            print("run a model that includes time investment")
+        if x =="confidence":
+            data = pd.DataFrame(index = self.params.confidences, columns= ["mean", "sd"])
+            for confidence in self.params.confidences:
+                data.loc[confidence,"mean"] = np.mean(self.time[self.confidence == confidence])
+                data.loc[confidence,"sd"] = np.std(self.time[self.confidence == confidence])
+        elif x == "stimulus":
+            data = pd.DataFrame(index=np.unique(self.stimuli), columns=["mean", "sd"])
+            for stimulus in np.unique(self.stimuli):
+                data.loc[stimulus, "mean"] = np.mean(self.time[self.confidence == stimulus])
+                data.loc[stimulus, "sd"] = np.std(self.time[self.confidence == stimulus])
+                # this doesnt work for some reason
+        sns.lineplot(data=data["mean"], marker='o')
+        # Add error bars
+        plt.errorbar(data.index, data['mean'], yerr=data['sd'], fmt='none', capsize=5)
+        plt.xlabel(x)
+        plt.ylabel('Average time investement')
+
+        # this is from copied in from Figures.py, and works, it can be adapted to get this to work
+        # data = pd.DataFrame(index=np.unique(self.stimuli),
+        #                     columns=["Correct", "Incorrect"])
+        # choices = self.choices.copy()
+        # choices[choices == 0] = -1
+        # for stimulus in np.unique(self.stimuli):
+        #     data.loc[stimulus, "Correct"] = self.time_investment[
+        #         (np.sign(self.stimuli) == choices) & (self.stimuli == stimulus)].mean()
+        #     data.loc[stimulus, "Incorrect"] = self.time_investment[
+        #         ~(np.sign(self.stimuli) == choices) & (self.stimuli == stimulus)].mean()
+        #
+        # sns.lineplot(data=data, dashes=False, marker="o", palette="Set1")
+
+
+    def plot_reward_real_time(self):
+        real_time = np.array([self.time_investment[i] + self.time_investment[i-1] for i in range(self.time_investment.shape)])
+        # todo plot the average reward over real time, to check if the model invests time properly
+        # the average reward should grow over time, as the model learns to leave early for low confidence decisions
+        # you can use sc.moving_avg() for averaging
+        ...
 
 
 def plot_params(params_a = [0.2,0.5,0.7],
@@ -1154,7 +1221,7 @@ def plot_params(params_a = [0.2,0.5,0.7],
     max_abs = np.max(np.abs(np.concatenate(params_ab.values.flatten())))
 
     for (i, j), ax in np.ndenumerate(axes):
-        # todo add other things you can plot here
+        # todo add other things you can plot here, so far this is only the updating matrix
         im = ax.imshow(params_ab.iloc[i,j].astype(np.float64).T,
                        cmap='RdBu', norm = matplotlib.colors.Normalize(vmin=-max_abs, vmax=max_abs),
                        interpolation='nearest', aspect='auto')
