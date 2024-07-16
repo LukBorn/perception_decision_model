@@ -25,7 +25,6 @@ def Figure_1(self,
     sns.lineplot(data=data, dashes=False, marker="o", palette="Set1", ax=axes[0,0])
     axes[0,0].set_xlabel("Current Stimulus")
     axes[0,0].set_ylabel("Average Choice")
-    axes[0, 0].text(-0.2,  0.94, 'A', fontsize=15, transform=axes[0, 0].transAxes)
 
     #Figure 1 B
     self.get_psychometric(subset = "total")
@@ -34,7 +33,6 @@ def Figure_1(self,
     sns.lineplot(data=data, dashes=False, markers=True, palette="Set1", ax=axes[1,0])
     axes[1,0].set_xlabel("Current/Previous Stimulus")
     axes[1,0].set_ylabel("Average Choice")
-    axes[1,0].text(-0.2, 0.94, 'B', fontsize=15, transform=axes[1,0].transAxes)
 
     # plot updating matrix
     img = axes[1,1].imshow(self.updating_matrix.values.astype(np.float64).T * 100,
@@ -68,8 +66,7 @@ def Figure_1(self,
     axes[0,1].set_xlabel("Current Stimulus")
     axes[0,1].set_ylabel("Average Choice")
     axes[0,1].legend(title="Previous Rewarded")
-    axes[0,1].text(-0.2, 0.94, 'C', fontsize=15, transform=axes[0,1].transAxes)
-
+    
     data = pd.DataFrame(columns=["Previous Left", "Previous Right", "Total"],
                         index=[i for i in np.unique(self.stimuli)])
     previous_choices = np.concatenate(([0], self.choices[:-1]))

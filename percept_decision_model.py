@@ -1253,7 +1253,7 @@ def simple_model(steps = 100000):
 
 def block_model(steps = 100000):
     model = Model(Params(time_steps=steps))
-    model.params.get_blocks(magnitude_structure=[(1, 1), (1, 0.5), (0.5, 1)], block_size=400)
+    model.params.get_blocks(magnitude_structure=[(1, 1), (1, 0.5), (0.5, 1)], block_size=200)
     model.run_model()
     return model
 
@@ -1261,7 +1261,7 @@ def catch_block_model(steps = 100000):
     model = Model(Params(time_steps=steps))
     model.params.get_blocks(magnitude_structure=[(1, 1), (1, 0.5), (0.5, 1)],
                             probability_structure=[(0.95,0.95)] * 3,
-                            block_size=400)
+                            block_size=200)
     model.run_model(reset_after_blocks=True)
     return model
 
